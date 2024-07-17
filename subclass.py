@@ -54,7 +54,7 @@ class Int8LinearWeight(Tensor):
         kwargs = kwargs or dict()
 
         if func is F.linear:
-            return fp_int8_linear(args[0], args[1], args[2] if len(args) > 2 else None)
+            return fp_int8_linear(*args)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
