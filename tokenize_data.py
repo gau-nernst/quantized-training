@@ -6,7 +6,6 @@ import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2-1.5B")
