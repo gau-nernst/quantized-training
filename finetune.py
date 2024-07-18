@@ -20,6 +20,11 @@ def create_dataset(data_path: str, batch_size: int):
         attn_mask = f.get_tensor("attn_mask")
 
     n = input_ids.shape[0]
+    print(
+        f"{data_path} has {n:,} samples. With {batch_size=:,}, it takes"
+        f" {n // batch_size:,} iterations to finish 1 epoch."
+    )
+
     while True:
         # shuffle
         indices = torch.randperm(n)
