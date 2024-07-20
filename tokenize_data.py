@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="Qwen/Qwen2-1.5B")
+    parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
     parser.add_argument("--dataset", default="HuggingFaceH4/ultrachat_200k")
     parser.add_argument("--train_split", default="train_sft")
     parser.add_argument("--test_split", default="test_sft")
@@ -32,11 +32,12 @@ if __name__ == "__main__":
     def tokenize_dataset(dataset: str, split: str, desc: str, save_path: Path):
         ds = load_dataset(dataset, split=split)
         column_names = list(ds.features)
+        ds = ds.with_format("torch")
         ds = ds.map(apply_chat_template, batched=True, remove_columns=column_names, desc=desc)
 
         data = dict(
-            input_ids=torch.tensor(ds["input_ids"], dtype=torch.int32),
-            attn_mask=torch.tensor(ds["attention_mask"], dtype=torch.uint8),
+            input_ids=ds["input_ids"].to(torch.int32),
+            attn_mask=ds["attention_mask"].to(torch.uint8),
         )
         safetensors.torch.save_file(data, save_path)
 
