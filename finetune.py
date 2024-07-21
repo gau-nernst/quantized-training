@@ -3,51 +3,91 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import argparse
+import bisect
 import json
 from datetime import datetime
 from pathlib import Path
 
-import safetensors
 import torch
 import wandb
+from datasets import load_dataset
 from torch import Tensor, nn
 from torchao.prototype import low_bit_optim
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
-def _data_iter(input_ids: Tensor, attn_mask: Tensor, batch_size: int, training: bool):
-    n = input_ids.shape[0]
+class Bucket:
+    def __init__(self, batch_size: int, bucket_size: int):
+        self.data = torch.empty(batch_size, bucket_size, dtype=torch.int64)
+        self.mask = torch.empty(batch_size, bucket_size, dtype=torch.bool)
+        self.pointer = 0
+        self.batch_size = batch_size
+        self.bucket_size = bucket_size
 
-    if not training:
-        for i in range(0, n, batch_size):
-            inputs = input_ids[i : min(i + batch_size, n)]
-            mask = attn_mask[i : min(i + batch_size, n)]
+    def add(self, tokens: Tensor):
+        if tokens.shape[0] > self.bucket_size:
+            tokens = tokens[: self.bucket_size]
 
-            labels = torch.where(mask.bool(), inputs, -100)
-            yield inputs.cuda().long(), labels.cuda().long()
-        raise StopIteration
+        n = tokens.shape[0]
+        self.data[self.pointer, :n] = tokens
+        self.mask[self.pointer, :n] = True
+        self.mask[self.pointer, n:] = False
+
+        self.pointer = (self.pointer + 1) % self.batch_size
+        return self.pointer == 0  # True means full batch
+
+
+def _data_iter(tokens_list: list[Tensor], batch_size: int, bucket_sizes: tuple[int, ...]):
+    n = len(tokens_list)
+    buckets = [Bucket(batch_size, size) for size in bucket_sizes]
 
     while True:
         # shuffle
-        indices = torch.randperm(n)
-        input_ids = input_ids[indices]
-        attn_mask = attn_mask[indices]
+        tokens_list = [tokens_list[idx] for idx in torch.randperm(n)]
 
-        for i in range(0, n - batch_size + 1, batch_size):
-            inputs = input_ids[i : i + batch_size]
-            mask = attn_mask[i : i + batch_size]
+        for i in range(n):
+            tokens = tokens_list[i]
+            bucket_idx = bisect.bisect_left(bucket_sizes, tokens.shape[0])
+            bucket = buckets[bucket_idx]
 
-            labels = torch.where(mask.bool(), inputs, -100)
-            yield inputs.cuda().long(), labels.cuda().long()
+            if bucket.add(tokens):
+                inputs = bucket.data
+                labels = torch.where(bucket.mask, inputs, -100)
+                yield inputs.cuda(), labels.cuda()
 
 
-def create_dataset(data_path: str, batch_size: int, training: bool):
-    with safetensors.safe_open(data_path, framework="pt") as f:
-        input_ids = f.get_tensor("input_ids")
-        attn_mask = f.get_tensor("attn_mask")
+def create_dataset(
+    model: str,
+    dataset: str,
+    split: str,
+    batch_size: int,
+    bucket_sizes: tuple[int, ...] = (1024, 2048),
+    question_key: str | None = None,
+    answer_key: str | None = None,
+):
 
-    return _data_iter(input_ids, attn_mask, batch_size, training), input_ids.shape[0]
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer.padding_side = "right"
+
+    def apply_chat_template(example):
+        if "messages" in example:
+            messages = example["messages"]
+        else:
+            messages = [
+                dict(role="user", content=example[question_key]),
+                dict(role="assistant", content=example[answer_key]),
+            ]
+        return dict(input_ids=tokenizer.apply_chat_template(messages, add_generation_prompt=False, tokenize=True))
+
+    ds = load_dataset(dataset, split=split).with_format("torch")
+    if "messages" not in ds.features:
+        assert question_key is not None and answer_key is not None
+
+    ds = ds.map(apply_chat_template, remove_columns=ds.features)
+    tokens_list = ds["input_ids"]
+
+    return _data_iter(tokens_list, batch_size, bucket_sizes), len(ds)
 
 
 def get_loss(model, inputs, labels):
@@ -94,7 +134,6 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=0)
     parser.add_argument("--optimizer_kwargs", type=json.loads, default=dict())
 
-    parser.add_argument("--eval_interval", type=int, default=1000)
     parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project")
     parser.add_argument("--run_name")
@@ -124,13 +163,19 @@ if __name__ == "__main__":
         model, args.optimizer, args.lr, args.weight_decay, args.optimizer_kwargs
     )
 
-    ds_path = Path("tokenized_data") / args.dataset.replace("/", "_") / args.model.replace("/", "_")
-    train_ds, train_size = create_dataset(ds_path / "train.safetensors", args.batch_size, True)
+    train_data_iter, train_size = create_dataset(
+        args.model,
+        args.dataset,
+        args.split,
+        args.batch_size,
+        question_key=args.question_key,
+        answer_key=args.answer_key,
+    )
     print(f"Training dataset size: {train_size:,}")
     print(f"Each epoch will takes {train_size // args.batch_size:,} iters to finish")
 
     Path("wandb_logs").mkdir(exist_ok=True)
-    wandb.init(project=args.project, name=args.run_name, dir="wandb_logs", config=args)
+    wandb_run = wandb.init(project=args.project, name=args.run_name, dir="wandb_logs", config=args)
 
     ckpt_dir = Path("checkpoints") / args.dataset.replace("/", "_") / args.model.replace("/", "_")
     ckpt_dir = ckpt_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -141,7 +186,7 @@ if __name__ == "__main__":
     model.train()
 
     while step < args.n_steps:
-        inputs, labels = next(train_ds)
+        inputs, labels = next(train_data_iter)
         loss = torch.compile(get_loss, fullgraph=True)(model, inputs, labels)
         loss.backward()
 
@@ -151,23 +196,7 @@ if __name__ == "__main__":
         if step % 50 == 0:
             loss_python = loss.item()
             pbar.set_postfix(loss=loss_python)
-            wandb.log(dict(loss=loss_python), step=step)
-
-        if args.eval_interval > 0 and step % args.eval_interval == 0:
-            eval_ds, eval_size = create_dataset(ds_path / "test.safetensors", args.batch_size, False)
-            model.eval()
-            total_loss = 0
-
-            # not exactly accurate
-            with torch.no_grad():
-                for i, (inputs, labels) in enumerate(tqdm(eval_ds, total=eval_size, desc="Eval")):
-                    loss = torch.compile(get_loss, fullgraph=True)(model, inputs, labels)
-                    total_loss = (total_loss * i + loss) / (i + 1)
-
-            print(f"Eval loss: {total_loss:.4f}")
-            wandb.log(dict(eval_loss=total_loss), step=step)
-
-            model.train()
+            wandb_run.log(dict(loss=loss_python), step=step)
 
         if args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
             # TODO: checkpoint optimizer
@@ -177,4 +206,4 @@ if __name__ == "__main__":
             )
             torch.save(ckpt, ckpt_dir / "last.pth")
 
-    wandb.finish()
+    wandb_run.finish()
