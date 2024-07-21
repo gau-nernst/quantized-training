@@ -138,7 +138,6 @@ if __name__ == "__main__":
         torch_dtype=torch.bfloat16,
         device_map="cuda",
         max_position_embeddings=args.max_seq_len,
-        use_cache=False,
     )
     model.gradient_checkpointing_enable()
     model.get_input_embeddings().requires_grad_(False)

@@ -1,3 +1,5 @@
 __pycache__/
 *.safetensors
 *.ipynb
+wandb_logs/
+checkpoints/
