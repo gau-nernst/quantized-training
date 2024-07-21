@@ -3,8 +3,8 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import argparse
-import bisect
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -17,44 +17,26 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
-class Bucket:
-    def __init__(self, batch_size: int, bucket_size: int):
-        self.data = torch.empty(batch_size, bucket_size, dtype=torch.int64)
-        self.mask = torch.empty(batch_size, bucket_size, dtype=torch.bool)
-        self.pointer = 0
-        self.batch_size = batch_size
-        self.bucket_size = bucket_size
-
-    def add(self, tokens: Tensor):
-        if tokens.shape[0] > self.bucket_size:
-            tokens = tokens[: self.bucket_size]
-
-        n = tokens.shape[0]
-        self.data[self.pointer, :n] = tokens
-        self.mask[self.pointer, :n] = True
-        self.mask[self.pointer, n:] = False
-
-        self.pointer = (self.pointer + 1) % self.batch_size
-        return self.pointer == 0  # True means full batch
-
-
-def _data_iter(tokens_list: list[Tensor], batch_size: int, bucket_sizes: tuple[int, ...]):
+def _data_iter(tokens_list: list[Tensor], batch_size: int, seq_len_multiple: int = 256):
     n = len(tokens_list)
-    buckets = [Bucket(batch_size, size) for size in bucket_sizes]
 
     while True:
         # shuffle
         tokens_list = [tokens_list[idx] for idx in torch.randperm(n)]
 
-        for i in range(n):
-            tokens = tokens_list[i]
-            bucket_idx = bisect.bisect_left(bucket_sizes, tokens.shape[0])
-            bucket = buckets[bucket_idx]
+        for i in range(0, n - batch_size + 1, batch_size):
+            tokens_batch = tokens_list[i : i + batch_size]
+            length = max(math.ceil(x.shape[0] / seq_len_multiple) * seq_len_multiple for x in tokens_batch)
 
-            if bucket.add(tokens):
-                inputs = bucket.data
-                labels = torch.where(bucket.mask, inputs, -100)
-                yield inputs.cuda(), labels.cuda()
+            inputs = torch.zeros(batch_size, length, dtype=torch.int64)
+            labels = torch.zeros(batch_size, length, dtype=torch.int64)
+            for _i, tokens in enumerate(tokens_batch):
+                n_toks = tokens.shape[0]
+                inputs[_i, :n_toks] = tokens
+                labels[_i, :n_toks] = tokens
+                labels[_i, n_toks:] = -100
+
+            yield inputs.cuda(), labels.cuda()
 
 
 def create_dataset(
@@ -62,13 +44,13 @@ def create_dataset(
     dataset: str,
     split: str,
     batch_size: int,
-    bucket_sizes: tuple[int, ...] = (1024, 2048),
+    max_seq_len: int,
     question_key: str | None = None,
     answer_key: str | None = None,
 ):
-
     tokenizer = AutoTokenizer.from_pretrained(model)
     tokenizer.padding_side = "right"
+    tokenizer.model_max_length = max_seq_len
 
     def apply_chat_template(example):
         if "messages" in example:
@@ -78,16 +60,18 @@ def create_dataset(
                 dict(role="user", content=example[question_key]),
                 dict(role="assistant", content=example[answer_key]),
             ]
-        return dict(input_ids=tokenizer.apply_chat_template(messages, add_generation_prompt=False, tokenize=True))
+        return dict(
+            input_ids=tokenizer.apply_chat_template(
+                messages, add_generation_prompt=False, tokenize=True, truncation=True
+            )
+        )
 
     ds = load_dataset(dataset, split=split).with_format("torch")
     if "messages" not in ds.features:
         assert question_key is not None and answer_key is not None
 
-    ds = ds.map(apply_chat_template, remove_columns=ds.features)
-    tokens_list = ds["input_ids"]
-
-    return _data_iter(tokens_list, batch_size, bucket_sizes), len(ds)
+    tokens_list = ds.map(apply_chat_template, remove_columns=ds.features)["input_ids"]
+    return _data_iter(tokens_list, batch_size), len(ds)
 
 
 def get_loss(model, inputs, labels):
@@ -123,8 +107,12 @@ def setup_fuse_backward_with_optim_step(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
+    parser.add_argument("--max_seq_len", type=int, default=2048)
+
     parser.add_argument("--dataset", default="HuggingFaceH4/ultrachat_200k")
-    parser.add_argument("--max_seq_length", type=int, default=2048)
+    parser.add_argument("--split", required=True)
+    parser.add_argument("--question_key")
+    parser.add_argument("--answer_key")
 
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--n_steps", type=int, default=1000)
@@ -149,7 +137,7 @@ if __name__ == "__main__":
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         device_map="cuda",
-        max_position_embeddings=args.max_seq_length,
+        max_position_embeddings=args.max_seq_len,
         use_cache=False,
     )
     model.gradient_checkpointing_enable()
@@ -168,6 +156,7 @@ if __name__ == "__main__":
         args.dataset,
         args.split,
         args.batch_size,
+        args.max_seq_len,
         question_key=args.question_key,
         answer_key=args.answer_key,
     )
