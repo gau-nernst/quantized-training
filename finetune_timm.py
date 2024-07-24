@@ -127,10 +127,10 @@ if __name__ == "__main__":
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     optim_cls = dict(
-        AdamW=torch.optim.Adam,
-        AdamW8bitAo=low_bit_optim.AdamW8bit,
-        AdamWFp8Ao=low_bit_optim.AdamWFp8,
-        AdamW4bitAo=low_bit_optim.AdamW4bit,
+        AdamW=torch.optim.AdamW,
+        AdamW8bit=low_bit_optim.AdamW8bit,
+        AdamWFp8=low_bit_optim.AdamWFp8,
+        AdamW4bit=low_bit_optim.AdamW4bit,
     )[args.optim]
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
