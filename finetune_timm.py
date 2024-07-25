@@ -17,6 +17,8 @@ from torchao.prototype import low_bit_optim
 from torchvision.transforms import v2
 from tqdm import tqdm
 
+from subclass import quantize_linear_weight
+
 
 class CosineSchedule:
     def __init__(self, lr: float, total_steps: int, warmup: float = 0.05) -> None:
@@ -38,6 +40,7 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--model_kwargs", type=json.loads, default=dict())
+    parser.add_argument("--model_int8", action="store_true")
 
     parser.add_argument("--n_epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=64)
@@ -124,9 +127,12 @@ if __name__ == "__main__":
     model = timm.create_model(args.model, pretrained=True, num_classes=45, **args.model_kwargs)
     model.cuda().bfloat16()
     model.set_grad_checkpointing()
+    if args.model_int8:
+        quantize_linear_weight(model)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     optim_cls = dict(
+        Adam=torch.optim.Adam,
         AdamW=torch.optim.AdamW,
         AdamW8bit=low_bit_optim.AdamW8bit,
         AdamWFp8=low_bit_optim.AdamWFp8,
@@ -141,9 +147,11 @@ if __name__ == "__main__":
     step = 0
     for epoch_idx in range(args.n_epochs):
         model.train()
+        pbar = tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}")
 
-        for batch in tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}"):
-            loss = torch.compile(model_loss)(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
+        for batch in pbar:
+            # loss = torch.compile(model_loss)(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
+            loss = model_loss(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
             loss.backward()
 
             if args.cosine_lr_scheduler:
@@ -151,8 +159,10 @@ if __name__ == "__main__":
                 for param_group in optim.param_groups:
                     param_group["lr"] = lr
 
-            if step % 100 == 0:
-                run.log(dict(loss=loss.item(), lr=optim.param_groups[0]["lr"]), step=step)
+            if step % 50 == 0:
+                log_dict = dict(loss=loss.item(), lr=optim.param_groups[0]["lr"])
+                run.log(log_dict, step=step)
+                pbar.set_postfix(loss=log_dict["loss"])
 
             optim.step()
             optim.zero_grad()
