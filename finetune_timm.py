@@ -150,8 +150,7 @@ if __name__ == "__main__":
         pbar = tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}")
 
         for batch in pbar:
-            # loss = torch.compile(model_loss)(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
-            loss = model_loss(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
+            loss = torch.compile(model_loss)(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
             loss.backward()
 
             if args.cosine_lr_scheduler:
@@ -159,7 +158,7 @@ if __name__ == "__main__":
                 for param_group in optim.param_groups:
                     param_group["lr"] = lr
 
-            if step % 50 == 0:
+            if step % 10 == 0:
                 log_dict = dict(loss=loss.item(), lr=optim.param_groups[0]["lr"])
                 run.log(log_dict, step=step)
                 pbar.set_postfix(loss=log_dict["loss"])
