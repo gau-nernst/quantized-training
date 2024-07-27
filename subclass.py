@@ -27,6 +27,9 @@ class Int8LinearWeight(Tensor):
 
     @staticmethod
     def quantize(tensor: Tensor, stochastic_rounding: bool = False):
+        original_dtype = tensor.dtype
+        tensor = tensor.float()
+
         # symmetric quantization
         scale = tensor.abs().amax(-1) / 127.5
         tensor = tensor / scale.clip(1e-12).view(-1, 1)
@@ -38,7 +41,7 @@ class Int8LinearWeight(Tensor):
             tensor = tensor.round()
 
         tensor = tensor.clip(-128, 127).to(torch.int8)
-        return tensor, scale
+        return tensor, scale.to(original_dtype)
 
     @classmethod
     def from_float(cls, tensor: Tensor):
@@ -76,12 +79,19 @@ class Int8LinearWeight(Tensor):
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int8LinearWeight
         elif func is aten.zeros_like.default:
-            kwargs.pop("memory_format")
+            kwargs.pop("memory_format", None)
             return torch.zeros(args[0].shape, dtype=args[0].dtype, device=args[0].device, **kwargs)
 
         # optim step
         elif func is aten.addcdiv_.default:
             output = torch.addcdiv(args[0].dequantize(), *args[1:], **kwargs)
+            int_data, scale = cls.quantize(output, stochastic_rounding=True)
+            args[0].int_data.copy_(int_data)
+            args[0].scale.copy_(scale)
+            return args[0]
+
+        elif func is aten.add_.default:
+            output = torch.add(args[0].dequantize(), *args[1:], **kwargs)
             int_data, scale = cls.quantize(output, stochastic_rounding=True)
             args[0].int_data.copy_(int_data)
             args[0].scale.copy_(scale)
@@ -105,7 +115,7 @@ class Int8WeightOnlyLinear(torch.autograd.Function):
     def backward(ctx, grad_output):
         input, weight = ctx.saved_tensors
 
-        dinput = (grad_output * weight.scale.clip(1e-12)) @ weight.int_data.to(grad_output.dtype)
+        dinput = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
         dweight = grad_output.flatten(0, -2).T @ input.flatten(0, -2)
         dbias = grad_output.sum(0) if ctx.bias else None
         return dinput, dweight, dbias

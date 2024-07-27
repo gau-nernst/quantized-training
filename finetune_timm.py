@@ -135,8 +135,11 @@ if __name__ == "__main__":
     optim_cls = dict(
         Adam=torch.optim.Adam,
         AdamW=torch.optim.AdamW,
+        Adam8bit=low_bit_optim.Adam8bit,
         AdamW8bit=low_bit_optim.AdamW8bit,
+        AdamFp8=low_bit_optim.AdamFp8,
         AdamWFp8=low_bit_optim.AdamWFp8,
+        Adam4bit=low_bit_optim.Adam4bit,
         AdamW4bit=low_bit_optim.AdamW4bit,
     )[args.optim]
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay)
