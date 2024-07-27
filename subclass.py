@@ -97,6 +97,13 @@ class Int8LinearWeight(Tensor):
             args[0].scale.copy_(scale)
             return args[0]
 
+        # not sure why torchao.prototype.low_bit_optim.Adam8bit requires this
+        elif func is aten.copy_.default:
+            if isinstance(args[0], cls) and isinstance(args[1], cls):
+                args[0].int_data.copy_(args[1].int_data)
+                args[0].scale.copy_(args[1].scale)
+                return args[0]
+
         raise NotImplementedError(f"{cls.__name__} dispatch: attempting to run {func}, this is not supported")
 
 
