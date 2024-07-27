@@ -90,7 +90,7 @@ class Int8LinearWeight(Tensor):
             args[0].scale.copy_(scale)
             return args[0]
 
-        elif func is aten.add_.default:
+        elif func is aten.add_.Tensor:
             output = torch.add(args[0].dequantize(), *args[1:], **kwargs)
             int_data, scale = cls.quantize(output, stochastic_rounding=True)
             args[0].int_data.copy_(int_data)
