@@ -32,7 +32,8 @@ class Int8LinearWeight(Tensor):
         tensor = tensor / scale.clip(1e-12).view(-1, 1)
 
         if stochastic_rounding:
-            tensor = tensor + torch.rand_like(tensor)
+            # floor is required since .to(torch.int8) will convert 3.1 to 3 but -3.1 to -3
+            tensor = (tensor + torch.rand_like(tensor)).floor()
         else:
             tensor = tensor.round()
 
