@@ -96,7 +96,8 @@ class Int8WeightOnlyLinear(torch.autograd.Function):
         ctx.save_for_backward(input, weight)
         ctx.bias = bias is not None
 
-        out = (input @ weight.int_data.to(input.dtype).T) * weight.scale
+        # NOTE: we have to .T before .to(input.dtype) for torch.compile() mixed matmul to work
+        out = (input @ weight.int_data.T.to(input.dtype)) * weight.scale
         out = out + bias if bias is not None else out
         return out
 
