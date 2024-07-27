@@ -5,6 +5,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import argparse
 import json
 import math
+from datetime import datetime
 from pathlib import Path
 
 import datasets
@@ -141,8 +142,9 @@ if __name__ == "__main__":
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
-    Path("wandb_logs").mkdir(exist_ok=True)
-    run = wandb.init(project=args.project, name=args.run_name, config=args, dir="wandb_logs")
+    save_dir = Path("runs") / datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    run = wandb.init(project=args.project, name=args.run_name, config=args, dir=save_dir)
 
     step = 0
     for epoch_idx in range(args.n_epochs):
@@ -170,5 +172,11 @@ if __name__ == "__main__":
         val_acc = evaluate_model(model, args)
         print(f"Epoch {epoch_idx + 1}/{args.n_epochs}: val_acc={val_acc.item() * 100:.2f}")
         run.log(dict(val_acc=val_acc), step=step)
+
+    max_memory = torch.cuda.max_memory_allocated()
+    run.log(dict(max_memory=max_memory))
+    print(f"Max memory allocated: {max_memory / 1e9} GiB")
+
+    torch.save(model.state_dict(), save_dir / "model.pth")
 
     run.finish()

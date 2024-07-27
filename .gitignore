@@ -3,3 +3,4 @@ __pycache__/
 *.ipynb
 wandb_logs/
 checkpoints/
+runs/
