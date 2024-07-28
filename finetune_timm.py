@@ -50,6 +50,7 @@ def get_parser():
     parser.add_argument("--optim", default="AdamW")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0)
+    parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
     parser.add_argument("--cosine_lr_scheduler", action="store_true")
 
     parser.add_argument("--project")
@@ -138,7 +139,7 @@ if __name__ == "__main__":
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim))
-    optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay)
+    optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
     save_dir = Path("runs") / args.model.replace("/", "_") / datetime.now().strftime("%Y%m%d_%H%M%S")
