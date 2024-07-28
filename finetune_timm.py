@@ -145,7 +145,7 @@ if __name__ == "__main__":
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
-    save_dir = Path("runs") / datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = Path("runs") / args.model.replace("/", "_") / datetime.now().strftime("%Y%m%d_%H%M%S")
     save_dir.mkdir(parents=True, exist_ok=True)
     run = wandb.init(project=args.project, name=args.run_name, config=args, dir=save_dir)
 
