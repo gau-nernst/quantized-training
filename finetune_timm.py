@@ -132,16 +132,7 @@ if __name__ == "__main__":
         quantize_linear_weight(model)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    optim_cls = dict(
-        Adam=torch.optim.Adam,
-        AdamW=torch.optim.AdamW,
-        Adam8bit=low_bit_optim.Adam8bit,
-        AdamW8bit=low_bit_optim.AdamW8bit,
-        AdamFp8=low_bit_optim.AdamFp8,
-        AdamWFp8=low_bit_optim.AdamWFp8,
-        Adam4bit=low_bit_optim.Adam4bit,
-        AdamW4bit=low_bit_optim.AdamW4bit,
-    )[args.optim]
+    optim_cls = getattr(low_bit_optim, args.optim)
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
@@ -155,7 +146,8 @@ if __name__ == "__main__":
         pbar = tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}")
 
         for batch in pbar:
-            loss = torch.compile(model_loss)(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
+            # loss = torch.compile(model_loss)(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
+            loss = model_loss(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
             loss.backward()
 
             if args.cosine_lr_scheduler:

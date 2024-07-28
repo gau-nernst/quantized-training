@@ -90,19 +90,24 @@ class Int8LinearWeight(Tensor):
             args[0].scale.copy_(scale)
             return args[0]
 
-        elif func is aten.add_.Tensor:
-            output = torch.add(args[0].dequantize(), *args[1:], **kwargs)
-            int_data, scale = cls.quantize(output, stochastic_rounding=True)
-            args[0].int_data.copy_(int_data)
-            args[0].scale.copy_(scale)
-            return args[0]
+        elif func is aten.sub.Tensor:
+            return func(args[0].dequantize(), *args[1:], **kwargs)
 
-        # not sure why torchao.prototype.low_bit_optim.Adam8bit requires this
         elif func is aten.copy_.default:
+            # not sure why torchao.prototype.low_bit_optim.Adam8bit requires this
             if isinstance(args[0], cls) and isinstance(args[1], cls):
                 args[0].int_data.copy_(args[1].int_data)
                 args[0].scale.copy_(args[1].scale)
-                return args[0]
+
+            elif isinstance(args[0], cls):
+                int_data, scale = cls.quantize(args[1], stochastic_rounding=True)
+                args[0].int_data.copy_(int_data)
+                args[0].scale.copy_(scale)
+
+            else:
+                args[0].copy_(args[1].dequantize())
+
+            return args[0]
 
         raise NotImplementedError(f"{cls.__name__} dispatch: attempting to run {func}, this is not supported")
 
