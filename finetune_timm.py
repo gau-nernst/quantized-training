@@ -18,7 +18,7 @@ from torchao.prototype import low_bit_optim
 from torchvision.transforms import v2
 from tqdm import tqdm
 
-from subclass import quantize_linear_weight
+from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
 
 
 class CosineSchedule:
@@ -41,7 +41,7 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--model_kwargs", type=json.loads, default=dict())
-    parser.add_argument("--model_int8", action="store_true")
+    parser.add_argument("--model_quantize")
 
     parser.add_argument("--n_epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=64)
@@ -55,6 +55,7 @@ def get_parser():
     parser.add_argument("--project")
     parser.add_argument("--run_name")
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--debug", action="store_true")
     return parser
 
 
@@ -128,11 +129,15 @@ if __name__ == "__main__":
     model = timm.create_model(args.model, pretrained=True, num_classes=45, **args.model_kwargs)
     model.cuda().bfloat16()
     model.set_grad_checkpointing()
-    if args.model_int8:
-        quantize_linear_weight(model)
+    if args.model_quantize == "int8":
+        quantize_linear_weight_int8(model)
+    elif args.model_quantize == "int4":
+        quantize_linear_weight_int4(model)
+    else:
+        raise ValueError(f"Unsupported {args.model_quantize=}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    optim_cls = getattr(low_bit_optim, args.optim)
+    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim))
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
@@ -146,8 +151,8 @@ if __name__ == "__main__":
         pbar = tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}")
 
         for batch in pbar:
-            # loss = torch.compile(model_loss)(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
-            loss = model_loss(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
+            loss_fn = torch.compile(model_loss) if not args.debug else model_loss
+            loss = loss_fn(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
             loss.backward()
 
             if args.cosine_lr_scheduler:
