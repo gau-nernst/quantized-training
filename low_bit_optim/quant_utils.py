@@ -102,7 +102,7 @@ def quantize_8bit_with_qmap(input: Tensor, qmap: Tensor, *, stochastic_rounding:
     codes += torch.where(input >= qmap[codes + 2], 2, 0)
     codes += torch.where(input >= qmap[codes + 1], 1, 0)
 
-    return _round_with_qmap(input, codes, 255, stochastic_rounding)
+    return _round_with_qmap(input, qmap, codes, 255, stochastic_rounding)
 
 
 def quantize_4bit_with_qmap(input: Tensor, qmap: Tensor, *, stochastic_rounding: bool = False):
@@ -113,7 +113,7 @@ def quantize_4bit_with_qmap(input: Tensor, qmap: Tensor, *, stochastic_rounding:
     codes += torch.where(input >= qmap[codes + 2], 2, 0)
     codes += torch.where(input >= qmap[codes + 1], 1, 0)
 
-    return _round_with_qmap(input, codes, 15, stochastic_rounding)
+    return _round_with_qmap(input, qmap, codes, 15, stochastic_rounding)
 
 
 def dequant_with_qmap(codes: Tensor, qmap: Tensor, scale: Tensor):
