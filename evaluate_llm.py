@@ -1,9 +1,8 @@
 import argparse
 
+import lm_eval
 import torch
-from lm_eval.evaluator import evaluate
 from lm_eval.models.huggingface import HFLM
-from lm_eval.tasks import get_task_dict
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 if __name__ == "__main__":
@@ -14,7 +13,7 @@ if __name__ == "__main__":
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=2048)
-
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -35,8 +34,9 @@ if __name__ == "__main__":
     if args.compile:
         model.compile(mode="max-autotune", fullgraph=True)
 
-    result = evaluate(
-        HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size, max_length=args.max_seq_len),
-        get_task_dict(args.tasks),
+    result = lm_eval.simple_evaluate(
+        model=HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size, max_length=args.max_seq_len),
+        tasks=args.tasks,
+        limit=10 if args.debug else None,
     )
-    print(result)
+    print(result["results"])
