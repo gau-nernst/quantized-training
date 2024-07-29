@@ -10,8 +10,12 @@ from .subclass_8bit import OptimState8bit
 from .subclass_fp8 import OptimStateFp8
 
 
+def _unwrap_dtensor(p: Tensor):
+    return p._local_tensor if isinstance(p, DTensor) else p
+
+
 class _Adam(Optimizer):
-    def __init__(self, params, lr, betas, eps, weight_decay, amsgrad, *, block_size) -> None:
+    def __init__(self, params, lr, betas, eps, weight_decay, amsgrad, *, block_size, compile_single_param) -> None:
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -23,6 +27,7 @@ class _Adam(Optimizer):
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
         super().__init__(params, defaults)
         self.block_size = block_size
+        self.compile_single_param = compile_single_param
 
     def __setstate__(self, state):
         super().__setstate__(state)
@@ -105,8 +110,36 @@ class _Adam(Optimizer):
 
         param_groups = self._prepare_param_groups()
 
-        # static compile optim step for all params in a single graph
-        torch.compile(param_groups_adam, fullgraph=True)(param_groups)
+        if self.compile_single_param:
+            # NOTE: right now, torch.compile(param_groups_adam) will have excessive memory usage for 4-bit optim.
+            # thus, as a workaround, we use torch.compile(single_param_adam) and call it for each param.
+
+            # unwrap DTensor since DTensor does not work well with dynamic compile
+            # flatten p, grad, and optim state to avoid recompilation
+            for group, lr, (beta1, beta2), weight_decay, eps in param_groups:
+                for p, grad, step, exp_avg, exp_avg_sq, max_exp_avg_sq in group:
+                    # DTensor._local_tensor has .requires_grad = False
+                    # to avoid recompilation, set p.requires_grad = False and restore it after optim step
+                    p.requires_grad_(False)
+                    torch.compile(single_param_adam, fullgraph=True, dynamic=True)(
+                        _unwrap_dtensor(p).view(-1),
+                        _unwrap_dtensor(grad).view(-1),
+                        step,
+                        _unwrap_dtensor(exp_avg).view(-1),
+                        _unwrap_dtensor(exp_avg_sq).view(-1),
+                        _unwrap_dtensor(max_exp_avg_sq).view(-1) if max_exp_avg_sq is not None else None,
+                        lr,
+                        beta1,
+                        beta2,
+                        weight_decay,
+                        eps,
+                    )
+                    p.requires_grad_(True)
+
+        else:
+            # static compile optim step for all params in a single graph
+            torch.compile(param_groups_adam, fullgraph=True)(param_groups)
+
         return loss
 
 
@@ -158,8 +191,27 @@ def single_param_adam(
 
 
 class Adam(_Adam):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False) -> None:
-        super().__init__(params, lr, betas, eps, weight_decay, amsgrad, block_size=float("inf"))
+    def __init__(
+        self,
+        params,
+        lr=1e-3,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=0,
+        amsgrad=False,
+        *,
+        compile_single_param=False,
+    ) -> None:
+        super().__init__(
+            params,
+            lr,
+            betas,
+            eps,
+            weight_decay,
+            amsgrad,
+            block_size=float("inf"),
+            compile_single_param=compile_single_param,
+        )
 
 
 class Adam8bit(_Adam):
@@ -173,9 +225,19 @@ class Adam8bit(_Adam):
         amsgrad=False,
         *,
         block_size=2048,
+        compile_single_param=False,
         stochastic_rounding=False,
     ) -> None:
-        super().__init__(params, lr, betas, eps, weight_decay, amsgrad, block_size=block_size)
+        super().__init__(
+            params,
+            lr,
+            betas,
+            eps,
+            weight_decay,
+            amsgrad,
+            block_size=block_size,
+            compile_single_param=compile_single_param,
+        )
         self.stochastic_rounding = stochastic_rounding
 
     def _subclass_zeros(self, p: Tensor, signed: bool):
@@ -199,51 +261,22 @@ class Adam4bit(_Adam):
         amsgrad=False,
         *,
         block_size=128,
+        compile_single_param=True,
     ) -> None:
-        super().__init__(params, lr, betas, eps, weight_decay, amsgrad, block_size=block_size)
+        assert compile_single_param
+        super().__init__(
+            params,
+            lr,
+            betas,
+            eps,
+            weight_decay,
+            amsgrad,
+            block_size=block_size,
+            compile_single_param=compile_single_param,
+        )
 
     def _subclass_zeros(self, p: Tensor, signed: bool):
         return OptimState4bit.zeros(p.shape, signed, self.block_size, p.device)
-
-    @staticmethod
-    def _unwrap_dtensor(p: Tensor):
-        return p._local_tensor if isinstance(p, DTensor) else p
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        param_groups = self._prepare_param_groups()
-
-        # NOTE: right now, torch.compile(param_groups_adam) will have excessive memory usage for 4-bit optim.
-        # thus, as a workaround, we use torch.compile(single_param_adam) and call it for each param.
-
-        # unwrap DTensor since DTensor does not work well with dynamic compile
-        # flatten p, grad, and optim state to avoid recompilation
-        for group, lr, (beta1, beta2), weight_decay, eps in param_groups:
-            for p, grad, step, exp_avg, exp_avg_sq, max_exp_avg_sq in group:
-                # DTensor._local_tensor has .requires_grad = False
-                # to avoid recompilation, set p.requires_grad = False and restore it after optim step
-                p.requires_grad_(False)
-                torch.compile(single_param_adam, fullgraph=True, dynamic=True)(
-                    self._unwrap_dtensor(p).view(-1),
-                    self._unwrap_dtensor(grad).view(-1),
-                    step,
-                    self._unwrap_dtensor(exp_avg).view(-1),
-                    self._unwrap_dtensor(exp_avg_sq).view(-1),
-                    self._unwrap_dtensor(max_exp_avg_sq).view(-1) if max_exp_avg_sq is not None else None,
-                    lr,
-                    beta1,
-                    beta2,
-                    weight_decay,
-                    eps,
-                )
-                p.requires_grad_(True)
-
-        return loss
 
 
 class AdamFp8(_Adam):
@@ -257,8 +290,18 @@ class AdamFp8(_Adam):
         amsgrad=False,
         *,
         block_size=2048,
+        compile_single_param=False,
     ) -> None:
-        super().__init__(params, lr, betas, eps, weight_decay, amsgrad, block_size=block_size)
+        super().__init__(
+            params,
+            lr,
+            betas,
+            eps,
+            weight_decay,
+            amsgrad,
+            block_size=block_size,
+            compile_single_param=compile_single_param,
+        )
 
     def _subclass_zeros(self, p: Tensor, signed: bool):
         return OptimStateFp8.zeros(p.shape, self.block_size, p.device)

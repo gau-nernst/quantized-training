@@ -68,6 +68,28 @@ def scale_tensor(input: Tensor, block_size: int):
     return input.view(shape), scale
 
 
+def _round_with_qmap(input: Tensor, qmap: Tensor, codes: Tensor, max_code: int, stochastic_rounding: bool):
+    """`codes` is the output after running binary search of `input` on `qmap`. In other words,
+    `qmap[codes] <= input < qmap[codes+1]`.
+    """
+    codes_up = (codes + 1).clip(max=max_code)
+    val_down = qmap[codes]
+    val_up = qmap[codes_up]
+
+    # fraction = residual / gap, but we try to avoid division
+    residual = input - val_down
+    gap = val_up - val_down
+
+    if stochastic_rounding:
+        # there is p=fraction chance of rounding up
+        codes = torch.where(torch.rand_like(residual) * gap < residual, codes_up, codes)
+    else:
+        # round up if fraction >= 0.5
+        codes = torch.where(residual >= gap * 0.5, codes_up, codes)
+
+    return codes.to(torch.uint8)
+
+
 def quantize_8bit_with_qmap(input: Tensor, qmap: Tensor, *, stochastic_rounding: bool = False):
     # GPU-friendly binary search
     # https://blog.demofox.org/2017/06/20/simd-gpu-friendly-branchless-binary-search/
@@ -80,24 +102,10 @@ def quantize_8bit_with_qmap(input: Tensor, qmap: Tensor, *, stochastic_rounding:
     codes += torch.where(input >= qmap[codes + 2], 2, 0)
     codes += torch.where(input >= qmap[codes + 1], 1, 0)
 
-    # rounding
-    codes_up = (codes + 1).clip(max=255)
-    val_down = qmap[codes]
-    val_up = qmap[codes_up]
-    residual = input - val_down
-    gap = val_up - val_down
-
-    if stochastic_rounding:
-        # there is p=residual/gap chance of rounding up
-        codes = torch.where(torch.rand_like(residual) * gap < residual, codes_up, codes)
-    else:
-        # round up if more than half-way
-        codes = torch.where(residual >= gap * 0.5, codes_up, codes)
-
-    return codes.to(torch.uint8)
+    return _round_with_qmap(input, codes, 255, stochastic_rounding)
 
 
-def quantize_4bit_with_qmap(input: Tensor, qmap: Tensor):
+def quantize_4bit_with_qmap(input: Tensor, qmap: Tensor, *, stochastic_rounding: bool = False):
     # GPU-friendly binary search
     # https://blog.demofox.org/2017/06/20/simd-gpu-friendly-branchless-binary-search/
     codes = torch.where(input >= qmap[8], 8, 0)
@@ -105,14 +113,7 @@ def quantize_4bit_with_qmap(input: Tensor, qmap: Tensor):
     codes += torch.where(input >= qmap[codes + 2], 2, 0)
     codes += torch.where(input >= qmap[codes + 1], 1, 0)
 
-    # rounding
-    codes_up = (codes + 1).clip(max=15)
-    val_down = qmap[codes]
-    val_up = qmap[codes_up]
-    residual = input - val_down
-    codes = torch.where(residual >= (val_up - val_down) * 0.5, codes_up, codes)
-
-    return codes.to(torch.uint8)
+    return _round_with_qmap(input, codes, 15, stochastic_rounding)
 
 
 def dequant_with_qmap(codes: Tensor, qmap: Tensor, scale: Tensor):
