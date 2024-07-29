@@ -81,8 +81,9 @@ class Int8LinearWeight(Tensor):
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int8LinearWeight
         elif func is aten.zeros_like.default:
-            kwargs.pop("memory_format", None)
-            return torch.zeros(args[0].shape, dtype=args[0].dtype, device=args[0].device, **kwargs)
+            dtype = kwargs.get("dtype", args[0].dtype)
+            device = kwargs.get("device", args[0].device)
+            return torch.zeros(args[0].shape, dtype=dtype, device=device)
 
         # optim step
         elif func is aten.addcdiv_.default:
@@ -246,8 +247,9 @@ class Int4LinearWeight(Tensor):
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int4LinearWeight
         elif func is aten.zeros_like.default:
-            kwargs.pop("memory_format", None)
-            return torch.zeros(args[0].shape, dtype=args[0].dtype, device=args[0].device, **kwargs)
+            dtype = kwargs.get("dtype", args[0].dtype)
+            device = kwargs.get("device", args[0].device)
+            return torch.zeros(args[0].shape, dtype=dtype, device=device)
 
         # optim step
         elif func is aten.addcdiv_.default:

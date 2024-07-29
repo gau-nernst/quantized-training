@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from tqdm import tqdm
 
+import bnb_optim
 import low_bit_optim
 from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
 
@@ -134,11 +135,11 @@ if __name__ == "__main__":
         quantize_linear_weight_int8(model)
     elif args.model_quantize == "int4":
         quantize_linear_weight_int4(model)
-    else:
+    elif args.model_quantize is not None:
         raise ValueError(f"Unsupported {args.model_quantize=}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim))
+    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim))
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
