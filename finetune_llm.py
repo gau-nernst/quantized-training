@@ -15,6 +15,7 @@ from torch import Tensor, nn
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+import bnb_optim
 import low_bit_optim
 
 
@@ -81,18 +82,13 @@ def get_loss(model, inputs, labels):
 
 def setup_fuse_backward_with_optim_step(
     model: nn.Module,
-    optimizer: str,
+    optim: str,
     lr: float,
     weight_decay: float,
-    optimizer_kwargs: dict,
+    optim_kwargs: dict,
 ):
-    optim_cls = dict(
-        AdamW=torch.optim.AdamW,
-        AdamW8bit=low_bit_optim.AdamW8bit,
-        AdamWFp8=low_bit_optim.AdamWFp8,  # requires PyTorch 2.4. embedding layer should be frozen.
-    )[optimizer]
-
-    optim_dict = {p: optim_cls([p], lr=lr, weight_decay=weight_decay, **optimizer_kwargs) for p in model.parameters()}
+    optim_cls = eval(optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim))
+    optim_dict = {p: optim_cls([p], lr=lr, weight_decay=weight_decay, **optim_kwargs) for p in model.parameters()}
 
     def optim_hook(p):
         optim_dict[p].step()
@@ -109,6 +105,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
     parser.add_argument("--max_seq_len", type=int, default=2048)
+    parser.add_argument("--freeze_embedding_layer", action="store_true")
 
     parser.add_argument("--dataset", default="HuggingFaceH4/ultrachat_200k")
     parser.add_argument("--split", required=True)
@@ -118,15 +115,16 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--n_steps", type=int, default=1000)
 
-    parser.add_argument("--optimizer", default="AdamW")
+    parser.add_argument("--optim", default="AdamW")
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight_decay", type=float, default=0)
-    parser.add_argument("--optimizer_kwargs", type=json.loads, default=dict())
+    parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
 
     parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project")
-    parser.add_argument("--run_name")
+    parser.add_argument("--run_name", default="debug")
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -139,17 +137,17 @@ if __name__ == "__main__":
         torch_dtype=torch.bfloat16,
         device_map="cuda",
         max_position_embeddings=args.max_seq_len,
+        use_cache=False,
     )
     model.gradient_checkpointing_enable()
-    model.get_input_embeddings().requires_grad_(False)
+    if args.freeze_embedding_layer:
+        model.get_input_embeddings().requires_grad_(False)
     print(f"Vocab size: {model.vocab_size:,}")
     print(f"No. of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     print(f"No. of non-trainable params: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
     print(f"No. of buffers: {sum(p.numel() for p in model.buffers()):,}")
 
-    optim_dict = setup_fuse_backward_with_optim_step(
-        model, args.optimizer, args.lr, args.weight_decay, args.optimizer_kwargs
-    )
+    optim_dict = setup_fuse_backward_with_optim_step(model, args.optim, args.lr, args.weight_decay, args.optim_kwargs)
 
     train_data_iter, train_size = create_dataset(
         args.model,
@@ -163,12 +161,9 @@ if __name__ == "__main__":
     print(f"Training dataset size: {train_size:,}")
     print(f"Each epoch will takes {train_size // args.batch_size:,} iters to finish")
 
-    Path("wandb_logs").mkdir(exist_ok=True)
-    wandb_run = wandb.init(project=args.project, name=args.run_name, dir="wandb_logs", config=args)
-
-    ckpt_dir = Path("checkpoints") / args.dataset.replace("/", "_") / args.model.replace("/", "_")
-    ckpt_dir = ckpt_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    save_dir = Path("runs") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    run = wandb.init(project=args.project, name=args.run_name, config=args, dir=save_dir)
 
     step = 0
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True)
@@ -176,7 +171,8 @@ if __name__ == "__main__":
 
     while step < args.n_steps:
         inputs, labels = next(train_data_iter)
-        loss = torch.compile(get_loss, fullgraph=True)(model, inputs, labels)
+        loss_fn = get_loss if args.debug else torch.compile(get_loss, fullgraph=True)
+        loss = loss_fn(model, inputs, labels)
         loss.backward()
 
         step += 1
@@ -185,7 +181,7 @@ if __name__ == "__main__":
         if step % 50 == 0:
             loss_python = loss.item()
             pbar.set_postfix(loss=loss_python)
-            wandb_run.log(dict(loss=loss_python), step=step)
+            run.log(dict(loss=loss_python), step=step)
 
         if args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
             # TODO: checkpoint optimizer
@@ -193,6 +189,6 @@ if __name__ == "__main__":
                 model=model.state_dict(),
                 step=step,
             )
-            torch.save(ckpt, ckpt_dir / "last.pth")
+            torch.save(ckpt, save_dir / "last.pth")
 
-    wandb_run.finish()
+    run.finish()

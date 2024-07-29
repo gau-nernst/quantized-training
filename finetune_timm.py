@@ -55,7 +55,7 @@ def get_parser():
     parser.add_argument("--cosine_lr_scheduler", action="store_true")
 
     parser.add_argument("--project")
-    parser.add_argument("--run_name")
+    parser.add_argument("--run_name", default="debug")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--debug", action="store_true")
     return parser
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
-    save_dir = Path("runs") / args.model.replace("/", "_") / datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = Path("runs") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
     run = wandb.init(project=args.project, name=args.run_name, config=args, dir=save_dir)
 
