@@ -12,9 +12,10 @@ import torch
 import wandb
 from datasets import load_dataset
 from torch import Tensor, nn
-from torchao.prototype import low_bit_optim
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+import low_bit_optim
 
 
 def _data_iter(tokens_list: list[Tensor], batch_size: int, seq_len_multiple: int = 256):

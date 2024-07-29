@@ -14,10 +14,10 @@ import torch
 import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
-from torchao.prototype import low_bit_optim
 from torchvision.transforms import v2
 from tqdm import tqdm
 
+import low_bit_optim
 from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
 
 
