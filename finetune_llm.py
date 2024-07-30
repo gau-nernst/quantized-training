@@ -17,6 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import bnb_optim
 import low_bit_optim
+from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
 
 
 def _data_iter(tokens_list: list[Tensor], batch_size: int, seq_len_multiple: int = 256):
@@ -106,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
     parser.add_argument("--max_seq_len", type=int, default=2048)
     parser.add_argument("--freeze_embedding_layer", action="store_true")
+    parser.add_argument("--model_quantize")
 
     parser.add_argument("--dataset", default="HuggingFaceH4/ultrachat_200k")
     parser.add_argument("--split", required=True)
@@ -142,6 +144,15 @@ if __name__ == "__main__":
     model.gradient_checkpointing_enable()
     if args.freeze_embedding_layer:
         model.get_input_embeddings().requires_grad_(False)
+
+    # don't quantize lm_head, since it might be weight-tied to input embeddings
+    if args.model_quantize == "int8":
+        quantize_linear_weight_int8(model.get_decoder())
+    elif args.model_quantize == "int4":
+        quantize_linear_weight_int4(model.get_decoder())
+    elif args.model_quantize is not None:
+        raise ValueError(f"Unsupported {args.model_quantize=}")
+
     print(f"Vocab size: {model.vocab_size:,}")
     print(f"No. of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     print(f"No. of non-trainable params: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
