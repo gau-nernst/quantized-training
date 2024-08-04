@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -48,6 +49,7 @@ def create_dataset(
     split: str,
     batch_size: int,
     max_seq_len: int,
+    seq_len_multiple: int = 256,
     question_key: str | None = None,
     answer_key: str | None = None,
 ):
@@ -74,42 +76,27 @@ def create_dataset(
         assert question_key is not None and answer_key is not None
 
     tokens_list = ds.map(apply_chat_template, remove_columns=ds.features)["input_ids"]
-    return _data_iter(tokens_list, batch_size), len(ds)
+    return _data_iter(tokens_list, batch_size, seq_len_multiple), len(ds)
 
 
 def get_loss(model, inputs, labels):
     return model(inputs, labels=labels).loss
 
 
-def setup_fuse_backward_with_optim_step(
-    model: nn.Module,
-    optim: str,
-    lr: float,
-    weight_decay: float,
-    optim_kwargs: dict,
-):
-    optim_cls = eval(optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim))
-    optim_dict = {p: optim_cls([p], lr=lr, weight_decay=weight_decay, **optim_kwargs) for p in model.parameters()}
-
-    def optim_hook(p):
-        optim_dict[p].step()
-        optim_dict[p].zero_grad()
-
-    for p in model.parameters():
-        if p.requires_grad:
-            p.register_post_accumulate_grad_hook(optim_hook)
-
-    return optim_dict
+def get_grad_norm(model: nn.Module):
+    return sum(p.grad.square().sum().item() for p in model.parameters() if p.grad is not None) ** 0.5
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
-    parser.add_argument("--max_seq_len", type=int, default=2048)
     parser.add_argument("--freeze_embedding_layer", action="store_true")
     parser.add_argument("--model_quantize")
+    parser.add_argument("--compile")
 
     parser.add_argument("--dataset", default="HuggingFaceH4/ultrachat_200k")
+    parser.add_argument("--max_seq_len", type=int, default=2048)
+    parser.add_argument("--seq_len_multiple", type=int, default=256)
     parser.add_argument("--split", required=True)
     parser.add_argument("--question_key")
     parser.add_argument("--answer_key")
@@ -126,7 +113,6 @@ if __name__ == "__main__":
     parser.add_argument("--project")
     parser.add_argument("--run_name", default="debug")
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -158,7 +144,8 @@ if __name__ == "__main__":
     print(f"No. of non-trainable params: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
     print(f"No. of buffers: {sum(p.numel() for p in model.buffers()):,}")
 
-    optim_dict = setup_fuse_backward_with_optim_step(model, args.optim, args.lr, args.weight_decay, args.optim_kwargs)
+    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim, partial=partial))
+    optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
 
     train_data_iter, train_size = create_dataset(
         args.model,
@@ -166,6 +153,7 @@ if __name__ == "__main__":
         args.split,
         args.batch_size,
         args.max_seq_len,
+        seq_len_multiple=args.seq_len_multiple,
         question_key=args.question_key,
         answer_key=args.answer_key,
     )
@@ -182,17 +170,24 @@ if __name__ == "__main__":
 
     while step < args.n_steps:
         inputs, labels = next(train_data_iter)
-        loss_fn = get_loss if args.debug else torch.compile(get_loss, fullgraph=True)
+        loss_fn = torch.compile(get_loss, fullgraph=True) if args.compile else get_loss
         loss = loss_fn(model, inputs, labels)
         loss.backward()
 
+        if step % 50 == 0:
+            log_dict = dict(
+                loss=loss.item(),
+                grad_norm=get_grad_norm(model),
+                lr=optim.param_groups[0]["lr"],
+            )
+            run.log(log_dict, step=step)
+            pbar.set_postfix(loss=log_dict["loss"])
+
+        optim.step()
+        optim.zero_grad()
+
         step += 1
         pbar.update()
-
-        if step % 50 == 0:
-            loss_python = loss.item()
-            pbar.set_postfix(loss=loss_python)
-            run.log(dict(loss=loss_python), step=step)
 
         if args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
             # TODO: checkpoint optimizer
@@ -201,5 +196,9 @@ if __name__ == "__main__":
                 step=step,
             )
             torch.save(ckpt, save_dir / "last.pth")
+
+    max_memory = torch.cuda.max_memory_allocated()
+    run.log(dict(max_memory=max_memory))
+    print(f"Max memory allocated: {max_memory / 1e9:.2f} GiB")
 
     run.finish()

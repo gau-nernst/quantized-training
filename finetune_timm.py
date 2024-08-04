@@ -14,6 +14,7 @@ import timm
 import torch
 import torch.nn.functional as F
 import wandb
+from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from tqdm import tqdm
@@ -97,6 +98,10 @@ def model_predict(model, images):
     return model(images).argmax(1)
 
 
+def get_grad_norm(model: nn.Module):
+    return sum(p.grad.square().sum().item() for p in model.parameters() if p.grad is not None) ** 0.5
+
+
 @torch.no_grad()
 def evaluate_model(model, args):
     model.eval()
@@ -167,7 +172,11 @@ if __name__ == "__main__":
                     param_group["lr"] = lr
 
             if step % 10 == 0:
-                log_dict = dict(loss=loss.item(), lr=optim.param_groups[0]["lr"])
+                log_dict = dict(
+                    loss=loss.item(),
+                    grad_norm=get_grad_norm(model),
+                    lr=optim.param_groups[0]["lr"],
+                )
                 run.log(log_dict, step=step)
                 pbar.set_postfix(loss=log_dict["loss"])
 
