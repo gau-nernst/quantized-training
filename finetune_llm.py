@@ -92,7 +92,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
     parser.add_argument("--freeze_embedding_layer", action="store_true")
     parser.add_argument("--model_quantize")
-    parser.add_argument("--compile")
+    parser.add_argument("--compile", action="store_true")
 
     parser.add_argument("--dataset", default="HuggingFaceH4/ultrachat_200k")
     parser.add_argument("--max_seq_len", type=int, default=2048)
