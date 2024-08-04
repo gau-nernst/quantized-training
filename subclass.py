@@ -93,8 +93,9 @@ class Int8LinearWeight(Tensor):
             args[0].scale.copy_(scale)
             return args[0]
 
-        elif func is aten.sub.Tensor:
-            return func(args[0].dequantize(), *args[1:], **kwargs)
+        elif func in (aten.sub.Tensor, aten.mul.Tensor):
+            args = [x.dequantize() if isinstance(x, Int8LinearWeight) else x for x in args]
+            return func(*args, **kwargs)
 
         elif func is aten.copy_.default:
             # not sure why torchao.prototype.low_bit_optim.Adam8bit requires this

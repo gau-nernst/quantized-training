@@ -163,8 +163,6 @@ def single_param_adamw(
     weight_decay: float,
     eps: float,
 ):
-    new_p = p * (1 - lr * weight_decay)
-
     bias_correction1 = 1 - beta1**step
     bias_correction2 = 1 - beta2**step
 
@@ -179,7 +177,7 @@ def single_param_adamw(
         denom = (new_exp_avg_sq.sqrt() / bias_correction2.sqrt()).add_(eps)
 
     step_size = lr / bias_correction1
-    new_p = new_p - step_size * new_exp_avg / denom
+    new_p = p * (1 - lr * weight_decay) - step_size * new_exp_avg / denom
 
     # in-place update possibly quantized tensors
     exp_avg.copy_(new_exp_avg)
