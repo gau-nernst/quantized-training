@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 import datasets
@@ -43,12 +44,14 @@ def get_parser():
     parser.add_argument("--model", required=True)
     parser.add_argument("--model_kwargs", type=json.loads, default=dict())
     parser.add_argument("--model_quantize")
+    parser.add_argument("--compile", action="store_true")
 
     parser.add_argument("--n_epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--n_workers", type=int, default=4)
+    parser.add_argument("--limit_steps", type=int, default=0)
 
-    parser.add_argument("--optim", default="AdamW")
+    parser.add_argument("--optim", default="torch.optim.AdamW")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
@@ -57,7 +60,6 @@ def get_parser():
     parser.add_argument("--project")
     parser.add_argument("--run_name", default="debug")
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--debug", action="store_true")
     return parser
 
 
@@ -121,6 +123,8 @@ if __name__ == "__main__":
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
+    if args.limit_steps:
+        args.n_epochs = 1
 
     for k, v in vars(args).items():
         print(f"{k}: {v}")
@@ -129,7 +133,7 @@ if __name__ == "__main__":
     print(f"Train dataset: {len(dloader.dataset):,} images")
 
     model = timm.create_model(args.model, pretrained=True, num_classes=45, **args.model_kwargs)
-    model.cuda().bfloat16()
+    model.bfloat16().cuda()
     model.set_grad_checkpointing()
     if args.model_quantize == "int8":
         quantize_linear_weight_int8(model)
@@ -139,8 +143,8 @@ if __name__ == "__main__":
         raise ValueError(f"Unsupported {args.model_quantize=}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim))
-    optim = optim_cls(model.parameters(), args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
+    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim, partial=partial))
+    optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
     save_dir = Path("runs") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -153,7 +157,7 @@ if __name__ == "__main__":
         pbar = tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}")
 
         for batch in pbar:
-            loss_fn = torch.compile(model_loss) if not args.debug else model_loss
+            loss_fn = torch.compile(model_loss) if args.compile else model_loss
             loss = loss_fn(model, batch["image"].cuda().bfloat16(), batch["label"].cuda())
             loss.backward()
 
@@ -171,13 +175,17 @@ if __name__ == "__main__":
             optim.zero_grad()
             step += 1
 
-        val_acc = evaluate_model(model, args)
-        print(f"Epoch {epoch_idx + 1}/{args.n_epochs}: val_acc={val_acc.item() * 100:.2f}")
-        run.log(dict(val_acc=val_acc), step=step)
+            if args.limit_steps > 0 and step == args.limit_steps:
+                break
+
+        if args.limit_steps == 0:
+            val_acc = evaluate_model(model, args)
+            print(f"Epoch {epoch_idx + 1}/{args.n_epochs}: val_acc={val_acc.item() * 100:.2f}")
+            run.log(dict(val_acc=val_acc), step=step)
 
     max_memory = torch.cuda.max_memory_allocated()
     run.log(dict(max_memory=max_memory))
-    print(f"Max memory allocated: {max_memory / 1e9} GiB")
+    print(f"Max memory allocated: {max_memory / 1e9:.2f} GiB")
 
     torch.save(model.state_dict(), save_dir / "model.pth")
 
