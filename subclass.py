@@ -76,8 +76,13 @@ class Int8LinearWeight(Tensor):
         if func is aten.detach.default:
             return cls(args[0].int_data, args[0].scale, requires_grad=False)
 
-        elif func is aten.clone.default:
-            return cls(args[0].int_data.clone(), args[0].scale.clone(), requires_grad=args[0].requires_grad)
+        elif func in (aten.clone.default, aten._to_copy.default):
+            kwargs.pop("dtype")  # _to_copy.default might have this. ignoring it might not be good.
+            return cls(
+                func(args[0].int_data, **kwargs),
+                func(args[0].scale, **kwargs),
+                requires_grad=args[0].requires_grad,
+            )
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int8LinearWeight
         elif func is aten.zeros_like.default:
@@ -94,7 +99,7 @@ class Int8LinearWeight(Tensor):
             return args[0]
 
         elif func in (aten.sub.Tensor, aten.mul.Tensor):
-            args = [x.dequantize() if isinstance(x, Int8LinearWeight) else x for x in args]
+            args = [x.dequantize() if isinstance(x, cls) else x for x in args]
             return func(*args, **kwargs)
 
         elif func is aten.copy_.default:
