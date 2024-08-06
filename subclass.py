@@ -35,7 +35,12 @@ class Int8LinearWeight(Tensor):
         tensor = tensor.float()
 
         # symmetric quantization
-        scale = tensor.abs().amax(-1) / 127.5
+        # scale = tensor.abs().amax(-1) / 127.5  # this is problematic
+        scale = tensor.abs().amax(-1) / 127
+        # pos_scale = tensor.clip(0).amax(-1) / 127
+        # neg_scale = tensor.neg().clip(0).amax(-1) / 128
+        # scale = torch.maximum(pos_scale, neg_scale)
+
         tensor = tensor / scale.clip(1e-12).view(-1, 1)
 
         if stochastic_rounding:
