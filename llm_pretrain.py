@@ -5,6 +5,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import argparse
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -56,25 +57,26 @@ def get_tinystories():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # default config is 470M
-    parser.add_argument("--d_model", default=1024)
-    parser.add_argument("--depth", default=24)
-    parser.add_argument("--ffn_size", default=4096)
-    parser.add_argument("--head_dim", default=64)
+    parser.add_argument("--d_model", type=int, default=1024)
+    parser.add_argument("--depth", type=int, default=24)
+    parser.add_argument("--ffn_size", type=int, default=4096)
+    parser.add_argument("--head_dim", type=int, default=64)
 
     parser.add_argument("--model_quantize")
 
-    parser.add_argument("--n_steps", default=1000)
-    parser.add_argument("--batch_size", default=4)
-    parser.add_argument("--seq_len", default=2048)
+    parser.add_argument("--n_steps", type=int, default=1000)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--seq_len", type=int, default=2048)
 
     parser.add_argument("--optim", default="torch.optim.AdamW")
-    parser.add_argument("--lr", default=3e-4)
-    parser.add_argument("--weight_decay", default=1e-2)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
 
+    parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project", default="llm_pretraining")
     parser.add_argument("--run_name")
-    parser.add_argument("--seed")
+    parser.add_argument("--seed", type=int)
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -97,7 +99,10 @@ if __name__ == "__main__":
 
     data = get_tinystories().cuda()
 
+    save_dir = Path("runs/llm_pretrain") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dir.mkdir(parents=True, exist_ok=True)
     run = wandb.init(dir="/tmp", config=args, project=args.project, name=args.run_name)
+
     step = 0
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True)
     model.train()
@@ -124,6 +129,14 @@ if __name__ == "__main__":
                 time0 = time1
             run.log(log_dict, step=step)
             pbar.set_postfix(loss=log_dict["loss"])
+
+        if step > 0 and args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
+            ckpt = dict(
+                model=model.state_dict(),
+                optim=optim.state_dict(),
+                step=step,
+            )
+            torch.save(ckpt, save_dir / "last.pth")
 
         optim.step()
         optim.zero_grad()
