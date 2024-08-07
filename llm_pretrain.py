@@ -1,3 +1,7 @@
+import os
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import argparse
 import json
 import time
@@ -108,14 +112,16 @@ if __name__ == "__main__":
         loss.backward()
 
         if step % 50 == 0:
-            time1 = time.time()
             log_dict = dict(
                 loss=loss.item(),
                 grad_norm=get_grad_norm(model),
                 lr=optim.param_groups[0]["lr"],
-                tokens_per_second=args.batch_size * args.seq_len * 50 / (time1 - time0),
+                max_memory_allocated=torch.cuda.max_memory_allocated(),
             )
-            time0 = time1
+            if step > 0:
+                time1 = time.time()
+                log_dict["tokens_per_second"] = args.batch_size * args.seq_len * 50 / (time1 - time0)
+                time0 = time1
             run.log(log_dict, step=step)
             pbar.set_postfix(loss=log_dict["loss"])
 
