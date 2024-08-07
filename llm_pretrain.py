@@ -9,7 +9,7 @@ import wandb
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from train_utils import get_grad_norm, get_optim_cls, print_model_stats
+from train_utils import get_grad_norm, get_optim_cls, print_model_stats, quantize_model
 
 
 def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
@@ -57,6 +57,8 @@ if __name__ == "__main__":
     parser.add_argument("--ffn_size", default=4096)
     parser.add_argument("--head_dim", default=64)
 
+    parser.add_argument("--model_quantize")
+
     parser.add_argument("--n_steps", default=1000)
     parser.add_argument("--batch_size", default=4)
     parser.add_argument("--seq_len", default=2048)
@@ -68,7 +70,11 @@ if __name__ == "__main__":
 
     parser.add_argument("--project", default="llm_pretraining")
     parser.add_argument("--run_name")
+    parser.add_argument("--seed")
     args = parser.parse_args()
+
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
 
     config = LlamaConfig(
         hidden_size=args.d_model,
@@ -79,6 +85,7 @@ if __name__ == "__main__":
         use_cache=False,
     )
     model = LlamaForCausalLM(config).bfloat16().cuda()
+    quantize_model(model, args.model_quantize)
     print_model_stats(model)
 
     optim_cls = get_optim_cls(args.optim)
