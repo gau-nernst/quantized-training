@@ -19,9 +19,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from tqdm import tqdm
 
-import bnb_optim
-import low_bit_optim
-from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
+from train_utils import get_grad_norm, get_optim_cls, print_model_stats, quantize_model
 
 
 class CosineSchedule:
@@ -98,10 +96,6 @@ def model_predict(model, images):
     return model(images).argmax(1)
 
 
-def get_grad_norm(model: nn.Module):
-    return sum(p.grad.square().sum().item() for p in model.parameters() if p.grad is not None) ** 0.5
-
-
 @torch.no_grad()
 def evaluate_model(model, args):
     model.eval()
@@ -140,15 +134,10 @@ if __name__ == "__main__":
     model = timm.create_model(args.model, pretrained=True, num_classes=45, **args.model_kwargs)
     model.bfloat16().cuda()
     model.set_grad_checkpointing()
-    if args.model_quantize == "int8":
-        quantize_linear_weight_int8(model)
-    elif args.model_quantize == "int4":
-        quantize_linear_weight_int4(model)
-    elif args.model_quantize is not None:
-        raise ValueError(f"Unsupported {args.model_quantize=}")
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    quantize_model(model, args.quantize_model)
+    print_model_stats(model)
 
-    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim, partial=partial))
+    optim_cls = get_optim_cls(args.optim)
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 

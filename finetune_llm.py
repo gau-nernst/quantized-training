@@ -6,19 +6,16 @@ import argparse
 import json
 import math
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 
 import torch
 import wandb
 from datasets import load_dataset
-from torch import Tensor, nn
+from torch import Tensor
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import bnb_optim
-import low_bit_optim
-from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
+from train_utils import get_grad_norm, get_optim_cls, print_model_stats, quantize_model
 
 
 def _data_iter(tokens_list: list[Tensor], batch_size: int, seq_len_multiple: int = 256):
@@ -83,10 +80,6 @@ def get_loss(model, inputs, labels):
     return model(inputs, labels=labels).loss
 
 
-def get_grad_norm(model: nn.Module):
-    return sum(p.grad.square().sum().item() for p in model.parameters() if p.grad is not None) ** 0.5
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
@@ -132,19 +125,12 @@ if __name__ == "__main__":
         model.get_input_embeddings().requires_grad_(False)
 
     # don't quantize lm_head, since it might be weight-tied to input embeddings
-    if args.model_quantize == "int8":
-        quantize_linear_weight_int8(model.get_decoder())
-    elif args.model_quantize == "int4":
-        quantize_linear_weight_int4(model.get_decoder())
-    elif args.model_quantize is not None:
-        raise ValueError(f"Unsupported {args.model_quantize=}")
+    quantize_model(model.get_decoder(), args.model_quantize)
 
     print(f"Vocab size: {model.vocab_size:,}")
-    print(f"No. of trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
-    print(f"No. of non-trainable params: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
-    print(f"No. of buffers: {sum(p.numel() for p in model.buffers()):,}")
+    print_model_stats(model)
 
-    optim_cls = eval(args.optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim, partial=partial))
+    optim_cls = get_optim_cls(args.optim)
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
 
     train_data_iter, train_size = create_dataset(
