@@ -107,44 +107,46 @@ if __name__ == "__main__":
     run = wandb.init(dir="/tmp", config=args, project=args.project, name=args.run_name)
 
     step = 0
+    log_interval = 50
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True)
     model.train()
     time0 = time.time()
 
     while step < args.n_steps:
-        # select a continuous chunk, then reshape it
+        # randomly select a continuous chunk, then reshape it
         idx = torch.randint(0, data.shape[0] - args.batch_size * args.seq_len, (1,)).item()
         batch = data[idx : idx + args.batch_size * args.seq_len].view(args.batch_size, args.seq_len).long()
 
         loss = torch.compile(get_loss)(model, batch)
         loss.backward()
 
-        if step % 50 == 0:
+        if step % log_interval == 0:
             log_dict = dict(
                 loss=loss.item(),
                 grad_norm=get_grad_norm(model),
                 lr=optim.param_groups[0]["lr"],
+                num_tokens_seen=args.batch_size * args.seq_len * step,
                 max_memory_allocated=torch.cuda.max_memory_allocated(),
             )
             if step > 0:
                 time1 = time.time()
-                log_dict["tokens_per_second"] = args.batch_size * args.seq_len * 50 / (time1 - time0)
+                log_dict["tokens_per_second"] = args.batch_size * args.seq_len * log_interval / (time1 - time0)
                 time0 = time1
             run.log(log_dict, step=step)
             pbar.set_postfix(loss=log_dict["loss"])
-
-        if step > 0 and args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
-            ckpt = dict(
-                model=model.state_dict(),
-                optim=optim.state_dict(),
-                step=step,
-            )
-            torch.save(ckpt, save_dir / "last.pth")
 
         optim.step()
         optim.zero_grad()
 
         step += 1
         pbar.update()
+
+        if args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
+            ckpt = dict(
+                model=model.state_dict(),
+                optim=optim.state_dict(),
+                step=step,
+            )
+            torch.save(ckpt, save_dir / "last.pth")
 
     run.finish()
