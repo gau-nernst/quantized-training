@@ -63,6 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--head_dim", type=int, default=64)
 
     parser.add_argument("--model_quantize")
+    parser.add_argument("--activation_checkpointing", action="store_true")
 
     parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=4)
@@ -91,6 +92,8 @@ if __name__ == "__main__":
         use_cache=False,
     )
     model = LlamaForCausalLM(config).bfloat16().cuda()
+    if args.activation_checkpointing:
+        model.gradient_checkpointing_enable()
     quantize_model(model, args.model_quantize)
     print_model_stats(model)
 
