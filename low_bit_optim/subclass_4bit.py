@@ -88,7 +88,7 @@ class OptimState4bit(Tensor):
 
 
 @OptimState4bit.implements(aten.copy_.default)
-def _(func, types, *args, **kwargs):
+def _(func, types, args, kwargs):
     dst = args[0]
     src = args[1]
 
@@ -111,14 +111,14 @@ def _(func, types, *args, **kwargs):
 
 
 @OptimState4bit.implements(aten.lerp.Scalar)
-def _(func, types, *args, **kwargs):
+def _(func, types, args, kwargs):
     args = [x.dequantize() if isinstance(x, OptimState4bit) else x for x in args]
     return func(*args, **kwargs)
 
 
 # this is needed for DTensor.from_local() and for flattening tensor
 @OptimState4bit.implements(aten.view.default)
-def _(func, types, *args, **kwargs):
+def _(func, types, args, kwargs):
     x, shape = args
 
     if tuple(x.shape) == tuple(shape):
@@ -139,7 +139,7 @@ def _(func, types, *args, **kwargs):
         _c10d_functional.wait_tensor.default,
     ]
 )
-def _(func, types, *args, **kwargs):
+def _(func, types, args, kwargs):
     x = args[0]
     if not isinstance(x, OptimState4bit):
         raise ValueError(f"expecting a OptimState4bit but found {type(x)}")
