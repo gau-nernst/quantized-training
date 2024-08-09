@@ -125,7 +125,7 @@ if __name__ == "__main__":
                 loss=loss.item(),
                 grad_norm=get_grad_norm(model),
                 lr=optim.param_groups[0]["lr"],
-                num_tokens_seen=args.batch_size * args.seq_len * step,
+                num_tokens_seen_millions=args.batch_size * args.seq_len * step / 1e6,
                 max_memory_allocated=torch.cuda.max_memory_allocated(),
             )
             if step > 0:
