@@ -134,7 +134,7 @@ if __name__ == "__main__":
     model = timm.create_model(args.model, pretrained=True, num_classes=45, **args.model_kwargs)
     model.bfloat16().cuda()
     model.set_grad_checkpointing()
-    quantize_model(model, args.quantize_model)
+    quantize_model(model, args.model_quantize)
     print_model_stats(model)
 
     optim_cls = get_optim_cls(args.optim)
