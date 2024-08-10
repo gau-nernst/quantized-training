@@ -12,14 +12,14 @@ Install other deps
 pip install -r requirements.txt
 ```
 
-## ViT fine-tuning
+## ViT fine-tuning on RESISC45
 
 ```
-python finetune_timm.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs 2 --batch_size 64 --model_kwargs '{"img_size":224}' --run_name int8_model_8bit_optim --seed 2024 --model_quantize int8 --optim low_bit_optim.Adam8bit
+python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs 2 --batch_size 64 --model_kwargs '{"img_size":224}' --seed 2024 --optim low_bit_optim.AdamW --model_quantize int8 --compile
 ```
 
-## LLM fine-tuning
+## LLM fine-tuning on MetaMathQA
 
 ```
-python finetune_llm.py --batch_size 4 --optim torch.optim.AdamW --ckpt_interval 10_000 --run_name qwen2_0.5b_bf16_optim8bit --n_steps 100_000 --seed 2024 --lr 1e-5 --dataset meta-math/MetaMathQA --question_key query --answer_key response --split train
+python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_layer --batch_size 4 --n_steps 100_000 --optim low_bit_optim.AdamW --ckpt_interval 10_000 --seed 2024 --compile
 ```

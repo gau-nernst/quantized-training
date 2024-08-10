@@ -30,49 +30,31 @@ def _data_iter(tokens_list: list[Tensor], batch_size: int, seq_len_multiple: int
             length = max(math.ceil(x.shape[0] / seq_len_multiple) * seq_len_multiple for x in tokens_batch)
 
             inputs = torch.zeros(batch_size, length, dtype=torch.int64)
-            labels = torch.zeros(batch_size, length, dtype=torch.int64)
+            labels = torch.full((batch_size, length), -100, dtype=torch.int64)
             for _i, tokens in enumerate(tokens_batch):
                 n_toks = tokens.shape[0]
                 inputs[_i, :n_toks] = tokens
                 labels[_i, :n_toks] = tokens
-                labels[_i, n_toks:] = -100
 
             yield inputs.cuda(), labels.cuda()
 
 
-def create_dataset(
-    model: str,
-    dataset: str,
-    split: str,
-    batch_size: int,
-    max_seq_len: int,
-    seq_len_multiple: int = 256,
-    question_key: str | None = None,
-    answer_key: str | None = None,
-):
-    tokenizer = AutoTokenizer.from_pretrained(model)
+def get_metamathqa(tokenizer_id: str, batch_size: int, max_seq_len: int, seq_len_multiple: int = 256):
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
     tokenizer.padding_side = "right"
     tokenizer.model_max_length = max_seq_len
 
-    def apply_chat_template(example):
-        if "messages" in example:
-            messages = example["messages"]
-        else:
-            messages = [
-                dict(role="user", content=example[question_key]),
-                dict(role="assistant", content=example[answer_key]),
-            ]
-        return dict(
-            input_ids=tokenizer.apply_chat_template(
-                messages, add_generation_prompt=False, tokenize=True, truncation=True
-            )
-        )
+    def apply_template(example):
+        text = (
+            "Below is an instruction that describes a task. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{query}\n\n"
+            "### Response: Let's think step by step. {response}"
+        ).format(query=example["query"], response=example["response"])
+        return tokenizer(text, truncation=True, return_attention_mask=False)
 
-    ds = load_dataset(dataset, split=split).with_format("torch")
-    if "messages" not in ds.features:
-        assert question_key is not None and answer_key is not None
-
-    tokens_list = ds.map(apply_chat_template, remove_columns=ds.features)["input_ids"]
+    ds = load_dataset("meta-math/MetaMathQA", split="train").with_format("torch")
+    tokens_list = ds.map(apply_template, remove_columns=ds.features)["input_ids"]
     return _data_iter(tokens_list, batch_size, seq_len_multiple), len(ds)
 
 
@@ -87,12 +69,8 @@ if __name__ == "__main__":
     parser.add_argument("--model_quantize")
     parser.add_argument("--compile", action="store_true")
 
-    parser.add_argument("--dataset", default="HuggingFaceH4/ultrachat_200k")
     parser.add_argument("--max_seq_len", type=int, default=2048)
     parser.add_argument("--seq_len_multiple", type=int, default=256)
-    parser.add_argument("--split", required=True)
-    parser.add_argument("--question_key")
-    parser.add_argument("--answer_key")
 
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--n_steps", type=int, default=1000)
@@ -133,24 +111,21 @@ if __name__ == "__main__":
     optim_cls = get_optim_cls(args.optim)
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
 
-    train_data_iter, train_size = create_dataset(
+    train_data_iter, train_size = get_metamathqa(
         args.model,
-        args.dataset,
-        args.split,
         args.batch_size,
         args.max_seq_len,
         seq_len_multiple=args.seq_len_multiple,
-        question_key=args.question_key,
-        answer_key=args.answer_key,
     )
     print(f"Training dataset size: {train_size:,}")
     print(f"Each epoch will takes {train_size // args.batch_size:,} iters to finish")
 
     save_dir = Path("runs") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
-    run = wandb.init(project=args.project, name=args.run_name, config=args, dir=save_dir)
+    run = wandb.init(project=args.project, name=args.run_name, config=args, dir="/tmp")
 
     step = 0
+    log_interval = 50
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True)
     model.train()
 
@@ -160,7 +135,7 @@ if __name__ == "__main__":
         loss = loss_fn(model, inputs, labels)
         loss.backward()
 
-        if step % 50 == 0:
+        if step % log_interval == 0:
             log_dict = dict(
                 loss=loss.item(),
                 grad_norm=get_grad_norm(model),
