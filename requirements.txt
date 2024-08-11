@@ -1,6 +1,5 @@
 transformers
 timm
-torchao @ git+https://github.com/pytorch/ao.git
 datasets
 wandb
 lm-eval

@@ -1,5 +1,14 @@
 # Quantized model training
 
+This repo contains some exploration works for quantized training. Inspirations:
+
+- Q-GaLore: [[paper](https://arxiv.org/abs/2407.08296)] [[code](https://github.com/VITA-Group/Q-GaLore)]
+- AQT: [[related paper](https://arxiv.org/abs/2105.03536)] [[code](https://github.com/google/aqt)]
+
+Eventually, some of these will be upstreamed to [torchao](https://github.com/pytorch/ao).
+
+## Environment setup
+
 Install PyTorch following the [official instructions](https://pytorch.org/). Recommended to use nightly version.
 
 ```
@@ -22,4 +31,10 @@ python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs
 
 ```
 python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_layer --batch_size 4 --n_steps 100_000 --optim low_bit_optim.AdamW --ckpt_interval 10_000 --seed 2024 --compile
+```
+
+## LLM pre-training on TinyStories
+
+```
+python llm_pretrain.py --seed 2024 --n_steps 100_000 --model_quantize int8
 ```
