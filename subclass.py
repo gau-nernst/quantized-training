@@ -8,17 +8,21 @@ aten = torch.ops.aten
 
 
 class Int8LinearWeight(Tensor):
-    def __new__(cls, int_data, scale, requires_grad=False):
+    @staticmethod
+    @torch._dynamo.disable
+    def __new__(cls, int_data: Tensor, scale: Tensor):
         return Tensor._make_wrapper_subclass(
             cls,
             int_data.shape,
             dtype=scale.dtype,
             device=int_data.device,
-            requires_grad=requires_grad,
         )
 
-    def __init__(self, int_data, scale, requires_grad=False):
+    @torch._dynamo.disable
+    def __init__(self, int_data: Tensor, scale: Tensor):
         assert int_data.dtype is torch.int8
+        assert int_data.ndim == 2
+        assert scale.ndim == 1
         self.int_data = int_data
         self.scale = scale
 
@@ -30,21 +34,16 @@ class Int8LinearWeight(Tensor):
         return cls(tensor_data_dict["int_data"], tensor_data_dict["scale"], *tensor_attributes)
 
     @staticmethod
+    @torch.no_grad()
     def quantize(tensor: Tensor, stochastic_rounding: bool = False):
         original_dtype = tensor.dtype
         tensor = tensor.float()
 
-        # symmetric quantization
-        # scale = tensor.abs().amax(-1) / 127.5  # this is problematic
+        # absmax symmetric quantization
         scale = tensor.abs().amax(-1) / 127
-        # pos_scale = tensor.clip(0).amax(-1) / 127
-        # neg_scale = tensor.neg().clip(0).amax(-1) / 128
-        # scale = torch.maximum(pos_scale, neg_scale)
-
         tensor = tensor / scale.clip(1e-12).view(-1, 1)
 
         if stochastic_rounding:
-            # floor is required since .to(torch.int8) will convert 3.1 to 3 but -3.1 to -3
             tensor = (tensor + torch.rand_like(tensor)).floor()
         else:
             tensor = tensor.round()
@@ -55,7 +54,9 @@ class Int8LinearWeight(Tensor):
     @classmethod
     def from_float(cls, tensor: Tensor):
         int_data, scale = cls.quantize(tensor.detach())
-        return cls(int_data, scale, requires_grad=tensor.requires_grad)
+        out = cls(int_data, scale)
+        out.requires_grad_(tensor.requires_grad)
+        return out
 
     def dequantize(self):
         return self.int_data * self.scale.view(-1, 1)
@@ -71,22 +72,25 @@ class Int8LinearWeight(Tensor):
         kwargs = kwargs or dict()
 
         if func is F.linear:
-            return int8_weight_only_linear(*args)
+            return _Int8WeightOnlyLinear.apply(*args, **kwargs)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
 
     @classmethod
     def __torch_dispatch__(cls, func, types, args, kwargs):
-        if func is aten.detach.default:
-            return cls(args[0].int_data, args[0].scale, requires_grad=False)
-
-        elif func in (aten.clone.default, aten._to_copy.default):
-            kwargs.pop("dtype")  # _to_copy.default might have this. ignoring it might not be good.
+        if func in (aten.detach.default, aten.clone.default):
             return cls(
-                func(args[0].int_data, **kwargs),
-                func(args[0].scale, **kwargs),
-                requires_grad=args[0].requires_grad,
+                func(args[0].int_data, *args, **kwargs),
+                func(args[0].scale, *args, **kwargs),
+            )
+
+        elif func in (aten._to_copy.default,):
+            device = kwargs.get("device", None)
+            dtype = kwargs.get("dtype", None)
+            return cls(
+                args[0].int_data.to(device=device),
+                args[0].scale.to(device=device, dtype=dtype),
             )
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int8LinearWeight
@@ -95,20 +99,11 @@ class Int8LinearWeight(Tensor):
             device = kwargs.get("device", args[0].device)
             return torch.zeros(args[0].shape, dtype=dtype, device=device)
 
-        # optim step
-        elif func is aten.addcdiv_.default:
-            output = torch.addcdiv(args[0].dequantize(), *args[1:], **kwargs)
-            int_data, scale = cls.quantize(output, stochastic_rounding=True)
-            args[0].int_data.copy_(int_data)
-            args[0].scale.copy_(scale)
-            return args[0]
-
         elif func in (aten.sub.Tensor, aten.mul.Tensor):
             args = [x.dequantize() if isinstance(x, cls) else x for x in args]
             return func(*args, **kwargs)
 
         elif func is aten.copy_.default:
-            # not sure why torchao.prototype.low_bit_optim.Adam8bit requires this
             if isinstance(args[0], cls) and isinstance(args[1], cls):
                 args[0].int_data.copy_(args[1].int_data)
                 args[0].scale.copy_(args[1].scale)
@@ -123,10 +118,16 @@ class Int8LinearWeight(Tensor):
 
             return args[0]
 
+        # optim step
+        elif func in (aten.addcdiv_.default, aten.add_.Tensor):
+            original = args[0]
+            out = func(args[0].dequantize(), *args[1:], **kwargs)
+            return original.copy_(out)
+
         raise NotImplementedError(f"{cls.__name__} dispatch: attempting to run {func}, this is not supported")
 
 
-class Int8WeightOnlyLinear(torch.autograd.Function):
+class _Int8WeightOnlyLinear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input: Tensor, weight: Int8LinearWeight, bias: Tensor | None = None):
         ctx.save_for_backward(input, weight)
@@ -141,13 +142,10 @@ class Int8WeightOnlyLinear(torch.autograd.Function):
     def backward(ctx, grad_output):
         input, weight = ctx.saved_tensors
 
-        dinput = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
-        dweight = grad_output.flatten(0, -2).T @ input.flatten(0, -2)
-        dbias = grad_output.sum(0) if ctx.bias else None
-        return dinput, dweight, dbias
-
-
-int8_weight_only_linear = Int8WeightOnlyLinear.apply
+        grad_input = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
+        grad_weight = grad_output.view(-1, weight.shape[0]).T @ input.view(-1, weight.shape[1])
+        grad_bias = grad_output.view(-1, weight.shape[0]).sum(0) if ctx.bias else None
+        return grad_input, grad_weight, grad_bias
 
 
 def quantize_linear_weight_int8(module: nn.Module):
@@ -163,16 +161,18 @@ def quantize_linear_weight_int8(module: nn.Module):
 
 
 class Int4LinearWeight(Tensor):
-    def __new__(cls, int_data, scale, zero_point, shape, requires_grad=False):
+    @staticmethod
+    @torch._dynamo.disable
+    def __new__(cls, int_data, scale, zero_point, shape):
         return Tensor._make_wrapper_subclass(
             cls,
             shape,
             dtype=scale.dtype,
             device=int_data.device,
-            requires_grad=requires_grad,
         )
 
-    def __init__(self, int_data, scale, zero_point, shape, requires_grad=False):
+    @torch._dynamo.disable
+    def __init__(self, int_data, scale, zero_point, shape):
         assert int_data.dtype is torch.uint8
         assert math.prod(shape) == int_data.numel() * 2
         self.int_data = int_data
@@ -219,7 +219,9 @@ class Int4LinearWeight(Tensor):
     @classmethod
     def from_float(cls, tensor: Tensor, group_size: int = 32):
         int_data, scale, zero_point = cls.quantize(tensor.detach(), group_size)
-        return cls(int_data, scale, zero_point, tensor.shape, requires_grad=tensor.requires_grad)
+        out = cls(int_data, scale, zero_point, tensor.shape)
+        out.requires_grad_(tensor.requires_grad)
+        return out
 
     def dequantize(self):
         x_uint4 = torch.stack([(self.int_data >> 4), self.int_data & 0b1111], dim=-1).view(-1, self.group_size)
@@ -245,7 +247,7 @@ class Int4LinearWeight(Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args, kwargs):
         if func is aten.detach.default:
-            return cls(args[0].int_data, args[0].scale, args[0].zero_point, args[0].shape, requires_grad=False)
+            return cls(args[0].int_data, args[0].scale, args[0].zero_point, args[0].shape)
 
         elif func is aten.clone.default:
             return cls(
@@ -253,7 +255,6 @@ class Int4LinearWeight(Tensor):
                 args[0].scale.clone(),
                 args[0].zero_point.clone(),
                 args[0].shape,
-                requires_grad=args[0].requires_grad,
             )
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int4LinearWeight
