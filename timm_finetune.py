@@ -141,9 +141,9 @@ if __name__ == "__main__":
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
-    save_dir = Path("runs") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dir = Path("runs/timm_finetune") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
-    run = wandb.init(project=args.project, name=args.run_name, config=args, dir=save_dir)
+    run = wandb.init(project=args.project, name=args.run_name, config=args, dir="/tmp")
 
     step = 0
     for epoch_idx in range(args.n_epochs):

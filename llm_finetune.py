@@ -120,7 +120,7 @@ if __name__ == "__main__":
     print(f"Training dataset size: {train_size:,}")
     print(f"Each epoch will takes {train_size // args.batch_size:,} iters to finish")
 
-    save_dir = Path("runs") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dir = Path("runs/llm_finetune") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
     run = wandb.init(project=args.project, name=args.run_name, config=args, dir="/tmp")
 
