@@ -76,7 +76,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_steps", type=int, default=1000)
 
     parser.add_argument("--optim", default="AdamW")
-    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
 
