@@ -3,8 +3,27 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch._higher_order_ops.out_dtype import out_dtype
 
 aten = torch.ops.aten
+
+
+@torch.no_grad()
+def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False):
+    original_dtype = tensor.dtype
+    tensor = tensor.float()
+
+    # absmax symmetric quantization
+    scale = tensor.abs().amax(-1) / 127
+    tensor = tensor / scale.clip(1e-12).view(-1, 1)
+
+    if stochastic_rounding:
+        tensor = (tensor + torch.rand_like(tensor)).floor()
+    else:
+        tensor = tensor.round()
+
+    tensor = tensor.clip(-128, 127).to(torch.int8)
+    return tensor, scale.to(original_dtype)
 
 
 class Int8LinearWeight(Tensor):
@@ -33,27 +52,9 @@ class Int8LinearWeight(Tensor):
     def __tensor_unflatten__(cls, tensor_data_dict, tensor_attributes, outer_size=None, outer_stride=None):
         return cls(tensor_data_dict["int_data"], tensor_data_dict["scale"], *tensor_attributes)
 
-    @staticmethod
-    @torch.no_grad()
-    def quantize(tensor: Tensor, stochastic_rounding: bool = False):
-        original_dtype = tensor.dtype
-        tensor = tensor.float()
-
-        # absmax symmetric quantization
-        scale = tensor.abs().amax(-1) / 127
-        tensor = tensor / scale.clip(1e-12).view(-1, 1)
-
-        if stochastic_rounding:
-            tensor = (tensor + torch.rand_like(tensor)).floor()
-        else:
-            tensor = tensor.round()
-
-        tensor = tensor.clip(-128, 127).to(torch.int8)
-        return tensor, scale.to(original_dtype)
-
     @classmethod
     def from_float(cls, tensor: Tensor):
-        int_data, scale = cls.quantize(tensor.detach())
+        int_data, scale = quantize_int8(tensor.detach())
         out = cls(int_data, scale)
         out.requires_grad_(tensor.requires_grad)
         return out
@@ -81,8 +82,8 @@ class Int8LinearWeight(Tensor):
     def __torch_dispatch__(cls, func, types, args, kwargs):
         if func in (aten.detach.default, aten.clone.default):
             return cls(
-                func(args[0].int_data, *args, **kwargs),
-                func(args[0].scale, *args, **kwargs),
+                func(args[0].int_data, *args[1:], **kwargs),
+                func(args[0].scale, *args[1:], **kwargs),
             )
 
         elif func in (aten._to_copy.default,):
@@ -109,7 +110,7 @@ class Int8LinearWeight(Tensor):
                 args[0].scale.copy_(args[1].scale)
 
             elif isinstance(args[0], cls):
-                int_data, scale = cls.quantize(args[1], stochastic_rounding=True)
+                int_data, scale = quantize_int8(args[1], stochastic_rounding=True)
                 args[0].int_data.copy_(int_data)
                 args[0].scale.copy_(scale)
 
@@ -140,6 +141,40 @@ class _Int8WeightOnlyLinear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        input, weight = ctx.saved_tensors
+
+        grad_input = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
+        grad_weight = grad_output.view(-1, weight.shape[0]).T @ input.view(-1, weight.shape[1])
+        grad_bias = grad_output.view(-1, weight.shape[0]).sum(0) if ctx.bias else None
+        return grad_input, grad_weight, grad_bias
+
+
+def _int8_mm(A: Tensor, B: Tensor):
+    return out_dtype(aten.mm.default, torch.int32, A, B)
+
+
+class _Int8DynamicActivationInt8WeightLinear(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input: Tensor, weight: Int8LinearWeight, bias: Tensor | None = None):
+        ctx.save_for_backward(input, weight)
+        ctx.bias = bias is not None
+
+        # dynamic quantization
+        batch_dims = input.shape[:-1]
+        input = input.view(-1, weight.shape[1])
+        input_int_data, input_scale = quantize_int8(input)
+
+        # INT8 x INT8 = INT32 matmul
+        out_int32 = _int8_mm(input_int_data, weight.int_data.T)
+        out = out_int32 * input_scale.view(-1, 1) * weight.scale
+        out = out + bias if bias is not None else out
+        out = out.view(*batch_dims, -1)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # generally we cannot do int8 matmul in backward because the scale is along the reduction dim
+        # TODO: investigate how google/aqt does this
         input, weight = ctx.saved_tensors
 
         grad_input = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
