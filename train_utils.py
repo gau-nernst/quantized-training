@@ -19,6 +19,8 @@ def get_optim_cls(optim):
 def quantize_model(model: nn.Module, quantization: str | None = None):
     if quantization == "int8":
         quantize_linear_weight_int8(model)
+    elif quantization == "int8_quantize_activation":
+        quantize_linear_weight_int8(model, quantize_activation=True)
     elif quantization == "int4":
         quantize_linear_weight_int4(model)
     elif quantization is not None:

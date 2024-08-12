@@ -29,7 +29,7 @@ def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False):
 class Int8LinearWeight(Tensor):
     @staticmethod
     @torch._dynamo.disable
-    def __new__(cls, int_data: Tensor, scale: Tensor):
+    def __new__(cls, int_data: Tensor, scale: Tensor, quantize_activation: bool = False):
         return Tensor._make_wrapper_subclass(
             cls,
             int_data.shape,
@@ -38,24 +38,25 @@ class Int8LinearWeight(Tensor):
         )
 
     @torch._dynamo.disable
-    def __init__(self, int_data: Tensor, scale: Tensor):
+    def __init__(self, int_data: Tensor, scale: Tensor, quantize_activation: bool = False):
         assert int_data.dtype is torch.int8
         assert int_data.ndim == 2
         assert scale.ndim == 1
         self.int_data = int_data
         self.scale = scale
+        self.quantize_activation = quantize_activation
 
     def __tensor_flatten__(self):
-        return ["int_data", "scale"], []
+        return ["int_data", "scale"], [self.quantize_activation]
 
     @classmethod
     def __tensor_unflatten__(cls, tensor_data_dict, tensor_attributes, outer_size=None, outer_stride=None):
         return cls(tensor_data_dict["int_data"], tensor_data_dict["scale"], *tensor_attributes)
 
     @classmethod
-    def from_float(cls, tensor: Tensor):
+    def from_float(cls, tensor: Tensor, *, quantize_activation: bool = False):
         int_data, scale = quantize_int8(tensor.detach())
-        out = cls(int_data, scale)
+        out = cls(int_data, scale, quantize_activation)
         out.requires_grad_(tensor.requires_grad)
         return out
 
@@ -64,8 +65,8 @@ class Int8LinearWeight(Tensor):
 
     def __repr__(self):
         return (
-            f"{self.__class__.__name__}(shape={tuple(self.shape)}, dtype={self.dtype}, device={self.device}, "
-            f"requires_grad={self.requires_grad})"
+            f"{self.__class__.__name__}(shape={tuple(self.shape)}, quantize_activation={self.quantize_activation}, "
+            f"dtype={self.dtype}, device={self.device}, requires_grad={self.requires_grad})"
         )
 
     @classmethod
@@ -73,7 +74,7 @@ class Int8LinearWeight(Tensor):
         kwargs = kwargs or dict()
 
         if func is F.linear:
-            return _Int8WeightOnlyLinear.apply(*args, **kwargs)
+            return _Int8Linear.apply(*args, **kwargs)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
@@ -84,6 +85,7 @@ class Int8LinearWeight(Tensor):
             return cls(
                 func(args[0].int_data, *args[1:], **kwargs),
                 func(args[0].scale, *args[1:], **kwargs),
+                args[0].quantize_activation,
             )
 
         elif func in (aten._to_copy.default,):
@@ -92,6 +94,7 @@ class Int8LinearWeight(Tensor):
             return cls(
                 args[0].int_data.to(device=device),
                 args[0].scale.to(device=device, dtype=dtype),
+                args[0].quantize_activation,
             )
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int8LinearWeight
@@ -128,47 +131,32 @@ class Int8LinearWeight(Tensor):
         raise NotImplementedError(f"{cls.__name__} dispatch: attempting to run {func}, this is not supported")
 
 
-class _Int8WeightOnlyLinear(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input: Tensor, weight: Int8LinearWeight, bias: Tensor | None = None):
-        ctx.save_for_backward(input, weight)
-        ctx.bias = bias is not None
-
-        # NOTE: we have to .T before .to(input.dtype) for torch.compile() mixed matmul to work
-        out = (input @ weight.int_data.T.to(input.dtype)) * weight.scale
-        out = out + bias if bias is not None else out
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        input, weight = ctx.saved_tensors
-
-        grad_input = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
-        grad_weight = grad_output.view(-1, weight.shape[0]).T @ input.view(-1, weight.shape[1])
-        grad_bias = grad_output.view(-1, weight.shape[0]).sum(0) if ctx.bias else None
-        return grad_input, grad_weight, grad_bias
-
-
 def _int8_mm(A: Tensor, B: Tensor):
     return out_dtype(aten.mm.default, torch.int32, A, B)
 
 
-class _Int8DynamicActivationInt8WeightLinear(torch.autograd.Function):
+class _Int8Linear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input: Tensor, weight: Int8LinearWeight, bias: Tensor | None = None):
         ctx.save_for_backward(input, weight)
         ctx.bias = bias is not None
 
-        # dynamic quantization
-        batch_dims = input.shape[:-1]
-        input = input.view(-1, weight.shape[1])
-        input_int_data, input_scale = quantize_int8(input)
+        if weight.quantize_activation:
+            # dynamic quantization
+            batch_dims = input.shape[:-1]
+            input = input.view(-1, weight.shape[1])
+            input_int_data, input_scale = quantize_int8(input)
 
-        # INT8 x INT8 = INT32 matmul
-        out_int32 = _int8_mm(input_int_data, weight.int_data.T)
-        out = out_int32 * input_scale.view(-1, 1) * weight.scale
+            # INT8 x INT8 = INT32 matmul
+            out_int32 = _int8_mm(input_int_data, weight.int_data.T)
+            out = out_int32 * input_scale.view(-1, 1) * weight.scale
+            out = out.view(*batch_dims, -1)
+
+        else:
+            # NOTE: we have to .T before .to(input.dtype) for torch.compile() mixed matmul to work
+            out = (input @ weight.int_data.T.to(input.dtype)) * weight.scale
+
         out = out + bias if bias is not None else out
-        out = out.view(*batch_dims, -1)
         return out
 
     @staticmethod
@@ -183,10 +171,10 @@ class _Int8DynamicActivationInt8WeightLinear(torch.autograd.Function):
         return grad_input, grad_weight, grad_bias
 
 
-def quantize_linear_weight_int8(module: nn.Module):
+def quantize_linear_weight_int8(module: nn.Module, *, quantize_activation: bool = False):
     if isinstance(module, nn.Linear):
         module.weight = nn.Parameter(
-            Int8LinearWeight.from_float(module.weight),
+            Int8LinearWeight.from_float(module.weight, quantize_activation=quantize_activation),
             requires_grad=module.weight.requires_grad,
         )
     else:

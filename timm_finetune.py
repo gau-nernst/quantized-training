@@ -5,8 +5,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import argparse
 import json
 import math
+import time
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 
 import datasets
@@ -14,7 +14,6 @@ import timm
 import torch
 import torch.nn.functional as F
 import wandb
-from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from tqdm import tqdm
@@ -145,7 +144,9 @@ if __name__ == "__main__":
     save_dir.mkdir(parents=True, exist_ok=True)
     run = wandb.init(project=args.project, name=args.run_name, config=args, dir="/tmp")
 
+    log_interval = 10
     step = 0
+    time0 = time.time()
     for epoch_idx in range(args.n_epochs):
         model.train()
         pbar = tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}")
@@ -160,12 +161,16 @@ if __name__ == "__main__":
                 for param_group in optim.param_groups:
                     param_group["lr"] = lr
 
-            if step % 10 == 0:
+            if step % log_interval == 0:
                 log_dict = dict(
                     loss=loss.item(),
                     grad_norm=get_grad_norm(model),
                     lr=optim.param_groups[0]["lr"],
                 )
+                if step > 0:
+                    time1 = time.time()
+                    log_dict["images_per_second"] = args.batch_size * log_interval / (time1 - time0)
+                    time0 = time1
                 run.log(log_dict, step=step)
                 pbar.set_postfix(loss=log_dict["loss"])
 
