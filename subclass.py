@@ -179,7 +179,7 @@ def quantize_linear_weight_int8(module: nn.Module, *, quantize_activation: bool 
         )
     else:
         for m in module.children():
-            quantize_linear_weight_int8(m)
+            quantize_linear_weight_int8(m, quantize_activation=quantize_activation)
     return module
 
 
