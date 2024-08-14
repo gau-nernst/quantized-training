@@ -70,7 +70,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seq_len", type=int, default=2048)
 
-    parser.add_argument("--optim", default="torch.optim.AdamW")
+    parser.add_argument("--optim", default="optimizers.AdamW")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     if args.seed is not None:
         torch.manual_seed(args.seed)
     if args.profile:
-        args.n_steps = 20
+        args.n_steps = 5
 
     config = LlamaConfig(
         hidden_size=args.d_model,
@@ -118,9 +118,7 @@ if __name__ == "__main__":
     model.train()
     time0 = time.time()
     if args.profile:
-        schedule = torch.profiler.schedule(wait=1, warmup=1, active=2)
-        prof = torch.profiler.profile(schedule=schedule)
-        prof.start()
+        prof = torch.profiler.profile()
 
     while step < args.n_steps:
         # randomly select a continuous chunk, then reshape it
@@ -150,8 +148,8 @@ if __name__ == "__main__":
 
         step += 1
         pbar.update()
-        if args.profile:
-            prof.step()
+        if args.profile and step == 1:
+            prof.start()
 
         if args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
             ckpt = dict(
@@ -164,4 +162,4 @@ if __name__ == "__main__":
     run.finish()
     if args.profile:
         prof.stop()
-        prof.export_chrome_trace("trace.json")
+        prof.export_chrome_trace("trace.json.gz")

@@ -49,7 +49,7 @@ def get_parser():
     parser.add_argument("--n_workers", type=int, default=4)
     parser.add_argument("--limit_steps", type=int, default=0)
 
-    parser.add_argument("--optim", default="torch.optim.AdamW")
+    parser.add_argument("--optim", default="optimizers.AdamW")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
@@ -58,6 +58,7 @@ def get_parser():
     parser.add_argument("--project")
     parser.add_argument("--run_name", default="debug")
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--profile", action="store_true")
     return parser
 
 
@@ -147,6 +148,9 @@ if __name__ == "__main__":
     log_interval = 10
     step = 0
     time0 = time.time()
+    if args.profile:
+        prof = torch.profiler.profile()
+
     for epoch_idx in range(args.n_epochs):
         model.train()
         pbar = tqdm(dloader, dynamic_ncols=True, desc=f"Epoch {epoch_idx + 1}/{args.n_epochs}")
@@ -177,6 +181,8 @@ if __name__ == "__main__":
             optim.step()
             optim.zero_grad()
             step += 1
+            if args.profile and step == 1:
+                prof.start()
 
             if args.limit_steps > 0 and step == args.limit_steps:
                 break
@@ -193,3 +199,6 @@ if __name__ == "__main__":
     torch.save(model.state_dict(), save_dir / "model.pth")
 
     run.finish()
+    if args.profile:
+        prof.stop()
+        prof.export_chrome_trace("trace.json.gz")

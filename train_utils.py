@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 import bnb_optim
-import low_bit_optim
+import optimizers
 from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
 
 
@@ -13,7 +13,7 @@ def get_grad_norm(model: nn.Module):
 
 
 def get_optim_cls(optim):
-    return eval(optim, dict(torch=torch, low_bit_optim=low_bit_optim, bnb_optim=bnb_optim, partial=partial))
+    return eval(optim, dict(torch=torch, optimizers=optimizers, bnb_optim=bnb_optim, partial=partial))
 
 
 def quantize_model(model: nn.Module, quantization: str | None = None):
