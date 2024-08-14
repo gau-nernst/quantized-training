@@ -5,7 +5,7 @@ from torch import nn
 
 import bnb_optim
 import optimizers
-from subclass import quantize_linear_weight_int4, quantize_linear_weight_int8
+from subclass import Int8QTConfig, quantize_linear_weight_int4, quantize_linear_weight_int8
 
 
 def get_grad_norm(model: nn.Module):
@@ -19,8 +19,10 @@ def get_optim_cls(optim):
 def quantize_model(model: nn.Module, quantization: str | None = None):
     if quantization == "int8":
         quantize_linear_weight_int8(model)
-    elif quantization == "int8_quantize_activation":
-        quantize_linear_weight_int8(model, quantize_activation=True)
+    elif quantization == "int8_activation_int8":
+        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8"))
+    elif quantization == "int8_activation_int8_sr":
+        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8_sr"))
     elif quantization == "int4":
         quantize_linear_weight_int4(model)
     elif quantization is not None:

@@ -1,4 +1,5 @@
 import math
+from typing import Literal, NamedTuple
 
 import torch
 import torch.nn.functional as F
@@ -26,10 +27,14 @@ def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False):
     return tensor, scale.to(original_dtype)
 
 
+class Int8QTConfig(NamedTuple):
+    activation: Literal["none", "int8", "int8_sr"] = "none"
+
+
 class Int8LinearWeight(Tensor):
     @staticmethod
     @torch._dynamo.disable
-    def __new__(cls, int_data: Tensor, scale: Tensor, quantize_activation: bool = False):
+    def __new__(cls, int_data: Tensor, scale: Tensor, config: Int8QTConfig):
         return Tensor._make_wrapper_subclass(
             cls,
             int_data.shape,
@@ -38,25 +43,25 @@ class Int8LinearWeight(Tensor):
         )
 
     @torch._dynamo.disable
-    def __init__(self, int_data: Tensor, scale: Tensor, quantize_activation: bool = False):
+    def __init__(self, int_data: Tensor, scale: Tensor, config: Int8QTConfig):
         assert int_data.dtype is torch.int8
         assert int_data.ndim == 2
         assert scale.ndim == 1
         self.int_data = int_data
         self.scale = scale
-        self.quantize_activation = quantize_activation
+        self.config = config
 
     def __tensor_flatten__(self):
-        return ["int_data", "scale"], [self.quantize_activation]
+        return ["int_data", "scale"], [self.config]
 
     @classmethod
     def __tensor_unflatten__(cls, tensor_data_dict, tensor_attributes, outer_size=None, outer_stride=None):
         return cls(tensor_data_dict["int_data"], tensor_data_dict["scale"], *tensor_attributes)
 
     @classmethod
-    def from_float(cls, tensor: Tensor, *, quantize_activation: bool = False):
+    def from_float(cls, tensor: Tensor, *, config: Int8QTConfig = Int8QTConfig()):
         int_data, scale = quantize_int8(tensor.detach())
-        out = cls(int_data, scale, quantize_activation)
+        out = cls(int_data, scale, config)
         out.requires_grad_(tensor.requires_grad)
         return out
 
@@ -65,7 +70,7 @@ class Int8LinearWeight(Tensor):
 
     def __repr__(self):
         return (
-            f"{self.__class__.__name__}(shape={tuple(self.shape)}, quantize_activation={self.quantize_activation}, "
+            f"{self.__class__.__name__}(shape={tuple(self.shape)}, config={self.config}, "
             f"dtype={self.dtype}, device={self.device}, requires_grad={self.requires_grad})"
         )
 
@@ -85,7 +90,7 @@ class Int8LinearWeight(Tensor):
             return cls(
                 func(args[0].int_data, *args[1:], **kwargs),
                 func(args[0].scale, *args[1:], **kwargs),
-                args[0].quantize_activation,
+                args[0].config,
             )
 
         elif func in (aten._to_copy.default,):
@@ -94,7 +99,7 @@ class Int8LinearWeight(Tensor):
             return cls(
                 args[0].int_data.to(device=device),
                 args[0].scale.to(device=device, dtype=dtype),
-                args[0].quantize_activation,
+                args[0].config,
             )
 
         # to make training work with existing PyTorch optimizers, we return a normal tensor instead of Int8LinearWeight
@@ -141,20 +146,21 @@ class _Int8Linear(torch.autograd.Function):
         ctx.save_for_backward(input, weight)
         ctx.bias = bias is not None
 
-        if weight.quantize_activation:
+        if weight.config.activation == "none":
+            # weight-only quantization
+            # NOTE: we have to .T before .to(input.dtype) for torch.compile() mixed matmul to work
+            out = (input @ weight.int_data.T.to(input.dtype)) * weight.scale
+
+        else:
             # dynamic quantization
             batch_dims = input.shape[:-1]
             input = input.view(-1, weight.shape[1])
-            input_int_data, input_scale = quantize_int8(input)
+            input_int_data, input_scale = quantize_int8(input, weight.config.activation == "int8_sr")
 
             # INT8 x INT8 = INT32 matmul
             out_int32 = _int8_mm(input_int_data, weight.int_data.T)
             out = out_int32 * input_scale.view(-1, 1) * weight.scale
             out = out.view(*batch_dims, -1)
-
-        else:
-            # NOTE: we have to .T before .to(input.dtype) for torch.compile() mixed matmul to work
-            out = (input @ weight.int_data.T.to(input.dtype)) * weight.scale
 
         out = out + bias if bias is not None else out
         return out
@@ -171,15 +177,15 @@ class _Int8Linear(torch.autograd.Function):
         return grad_input, grad_weight, grad_bias
 
 
-def quantize_linear_weight_int8(module: nn.Module, *, quantize_activation: bool = False):
+def quantize_linear_weight_int8(module: nn.Module, *, config: Int8QTConfig = Int8QTConfig()):
     if isinstance(module, nn.Linear):
         module.weight = nn.Parameter(
-            Int8LinearWeight.from_float(module.weight, quantize_activation=quantize_activation),
+            Int8LinearWeight.from_float(module.weight, config=config),
             requires_grad=module.weight.requires_grad,
         )
     else:
         for m in module.children():
-            quantize_linear_weight_int8(m, quantize_activation=quantize_activation)
+            quantize_linear_weight_int8(m, config=config)
     return module
 
 
