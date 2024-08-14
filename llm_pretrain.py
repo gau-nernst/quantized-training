@@ -78,10 +78,13 @@ if __name__ == "__main__":
     parser.add_argument("--project", default="llm_pretraining")
     parser.add_argument("--run_name")
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
+    if args.profile:
+        args.n_steps = 20
 
     config = LlamaConfig(
         hidden_size=args.d_model,
@@ -104,13 +107,19 @@ if __name__ == "__main__":
 
     save_dir = Path("runs/llm_pretrain") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
-    run = wandb.init(dir="/tmp", config=args, project=args.project, name=args.run_name)
+    run = wandb.init(
+        dir="/tmp", config=args, project=args.project, name=args.run_name, mode="disabled" if args.profile else None
+    )
 
     step = 0
     log_interval = 50
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True)
     model.train()
     time0 = time.time()
+    if args.profile:
+        schedule = torch.profiler.schedule(wait=1, warmup=1, active=2)
+        prof = torch.profiler.profile(schedule=schedule)
+        prof.start()
 
     while step < args.n_steps:
         # randomly select a continuous chunk, then reshape it
@@ -140,6 +149,8 @@ if __name__ == "__main__":
 
         step += 1
         pbar.update()
+        if args.profile:
+            prof.step()
 
         if args.ckpt_interval > 0 and step % args.ckpt_interval == 0:
             ckpt = dict(
@@ -150,3 +161,6 @@ if __name__ == "__main__":
             torch.save(ckpt, save_dir / "last.pth")
 
     run.finish()
+    if args.profile:
+        prof.stop()
+        prof.export_chrome_trace("trace.json")
