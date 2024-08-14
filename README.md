@@ -36,5 +36,5 @@ python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_laye
 ## LLM pre-training on TinyStories
 
 ```
-python llm_pretrain.py --seed 2024 --n_steps 100_000 --model_quantize int8
+python llm_tinystories_pretrain.py --seed 2024 --n_steps 100_000 --model_quantize int8
 ```

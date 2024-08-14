@@ -21,8 +21,9 @@ def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
     return model(batch, labels=batch).loss
 
 
-def get_tinystories():
-    save_path = Path("tokenized_data.bin")
+def get_tinystories(split: str):
+    assert split in ("train", "valid")
+    save_path = Path(f"tinystories_{split}.bin")
 
     if not save_path.exists():
         import sentencepiece as spm
@@ -33,7 +34,7 @@ def get_tinystories():
         assert tokenizer.vocab_size() < (1 << 16)  # make sure we can use uint16
 
         # do everything in memory. we have enough RAM
-        filepath = hf_hub_download("roneneldan/TinyStories", "TinyStoriesV2-GPT4-train.txt", repo_type="dataset")
+        filepath = hf_hub_download("roneneldan/TinyStories", f"TinyStoriesV2-GPT4-{split}.txt", repo_type="dataset")
         stories = open(filepath).read().split("\n<|endoftext|>\n")
 
         tokens_list = []
@@ -103,7 +104,7 @@ if __name__ == "__main__":
     optim_cls = get_optim_cls(args.optim)
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
 
-    data = get_tinystories().cuda()
+    data = get_tinystories("train").cuda()
 
     save_dir = Path("runs/llm_pretrain") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
