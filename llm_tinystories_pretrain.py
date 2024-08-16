@@ -69,6 +69,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seq_len", type=int, default=2048)
+    parser.add_argument("--gradient_accumulation", type=int, default=1)
 
     parser.add_argument("--optim", default="optimizers.AdamW")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -82,6 +83,7 @@ if __name__ == "__main__":
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
 
+    assert args.batch_size % args.gradient_accumulation == 0
     if args.seed is not None:
         torch.manual_seed(args.seed)
     if args.profile:
@@ -114,6 +116,7 @@ if __name__ == "__main__":
 
     step = 0
     log_interval = 50
+    bsize = args.batch_size // args.gradient_accumulation
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True)
     model.train()
     time0 = time.time()
@@ -121,12 +124,13 @@ if __name__ == "__main__":
         prof = torch.profiler.profile()
 
     while step < args.n_steps:
-        # randomly select a continuous chunk, then reshape it
-        idx = torch.randint(0, data.shape[0] - args.batch_size * args.seq_len, (1,)).item()
-        batch = data[idx : idx + args.batch_size * args.seq_len].view(args.batch_size, args.seq_len).long()
+        for _ in range(args.gradient_accumulation):
+            # randomly select a continuous chunk, then reshape it
+            idx = torch.randint(0, data.shape[0] - bsize * args.seq_len, (1,)).item()
+            batch = data[idx : idx + bsize * args.seq_len].view(bsize, args.seq_len).long()
 
-        loss = torch.compile(get_loss)(model, batch)
-        loss.backward()
+            loss = torch.compile(get_loss)(model, batch)
+            loss.backward()
 
         if step % log_interval == 0:
             log_dict = dict(

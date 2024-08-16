@@ -10,13 +10,13 @@ aten = torch.ops.aten
 
 
 @torch.no_grad()
-def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False):
+def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int = -1):
     original_dtype = tensor.dtype
     tensor = tensor.float()
 
     # absmax symmetric quantization
-    scale = tensor.abs().amax(-1) / 127
-    tensor = tensor / scale.clip(1e-12).view(-1, 1)
+    scale = tensor.abs().amax(dim) / 127
+    tensor = tensor / scale.clip(1e-12).unsqueeze(dim)
 
     if stochastic_rounding:
         tensor = (tensor + torch.rand_like(tensor)).floor()
@@ -29,6 +29,7 @@ def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False):
 
 class Int8QTConfig(NamedTuple):
     activation: Literal["none", "int8", "int8_sr"] = "none"
+    grad_weight_compute: Literal["none", "int8", "int8_sr"] = "none"
 
 
 class Int8LinearWeight(Tensor):
@@ -170,10 +171,25 @@ class _Int8Linear(torch.autograd.Function):
         # generally we cannot do int8 matmul in backward because the scale is along the reduction dim
         # TODO: investigate how google/aqt does this
         input, weight = ctx.saved_tensors
+        weight: Int8LinearWeight
 
         grad_input = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
-        grad_weight = grad_output.view(-1, weight.shape[0]).T @ input.view(-1, weight.shape[1])
-        grad_bias = grad_output.view(-1, weight.shape[0]).sum(0) if ctx.bias else None
+
+        grad_output = grad_output.view(-1, weight.shape[0])
+        input = input.view(-1, weight.shape[1])
+
+        if weight.config.grad_weight_compute == "none":
+            grad_weight = grad_output.T @ input
+
+        else:
+            use_sr = weight.config.grad_weight_compute == "int8_sr"
+            grad_output_i8, grad_output_scale = quantize_int8(grad_output, use_sr, dim=0)  # col-wise
+            input_i8, input_scale = quantize_int8(input, use_sr, dim=0)  # col-wise
+
+            grad_weight_i32 = _int8_mm(grad_output_i8.T, input_i8)
+            grad_weight = grad_weight_i32 * grad_output_scale.view(-1, 1) * input_scale
+
+        grad_bias = grad_output.sum(0) if ctx.bias else None
         return grad_input, grad_weight, grad_bias
 
 

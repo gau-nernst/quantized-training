@@ -17,12 +17,17 @@ def get_optim_cls(optim):
 
 
 def quantize_model(model: nn.Module, quantization: str | None = None):
+    # TODO: revamp this
     if quantization == "int8":
         quantize_linear_weight_int8(model)
     elif quantization == "int8_activation_int8":
         quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8"))
     elif quantization == "int8_activation_int8_sr":
         quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8_sr"))
+    elif quantization == "int8_activation_int8_grad_weight_int8":
+        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8", grad_weight_compute="int8"))
+    elif quantization == "int8_activation_int8_sr_grad_weight_int8_sr":
+        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8_sr", grad_weight_compute="int8_sr"))
     elif quantization == "int4":
         quantize_linear_weight_int4(model)
     elif quantization is not None:
