@@ -15,7 +15,9 @@ if __name__ == "__main__":
     parser.add_argument("--ffn_size", type=int, default=4096)
     parser.add_argument("--head_dim", type=int, default=64)
 
-    parser.add_argument("--model_quantize")
+    parser.add_argument("--weight_quantize", default="none")
+    parser.add_argument("--activation_quantize", default="none")
+    parser.add_argument("--grad_weight_compute", default="none")
     parser.add_argument("--seq_len", type=int, default=2048)
     parser.add_argument("--checkpoint", required=True)
     args = parser.parse_args()
@@ -32,7 +34,7 @@ if __name__ == "__main__":
     state_dict = torch.load(args.checkpoint, map_location="cpu", mmap=True)
     model.load_state_dict(state_dict["model"])
 
-    quantize_model(model, args.model_quantize)
+    quantize_model(model, args.weight_quantize, args.activation_quantize, args.grad_weight_compute)
     print_model_stats(model)
 
     data = get_tinystories("valid").cuda()

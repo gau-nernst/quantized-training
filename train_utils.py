@@ -16,22 +16,14 @@ def get_optim_cls(optim):
     return eval(optim, dict(torch=torch, optimizers=optimizers, bnb_optim=bnb_optim, partial=partial))
 
 
-def quantize_model(model: nn.Module, quantization: str | None = None):
-    # TODO: revamp this
-    if quantization == "int8":
-        quantize_linear_weight_int8(model)
-    elif quantization == "int8_activation_int8":
-        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8"))
-    elif quantization == "int8_activation_int8_sr":
-        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8_sr"))
-    elif quantization == "int8_activation_int8_grad_weight_int8":
-        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8", grad_weight_compute="int8"))
-    elif quantization == "int8_activation_int8_sr_grad_weight_int8_sr":
-        quantize_linear_weight_int8(model, config=Int8QTConfig(activation="int8_sr", grad_weight_compute="int8_sr"))
-    elif quantization == "int4":
+def quantize_model(model: nn.Module, weight: str, activation: str, grad_weight_compute: str):
+    if weight == "int8":
+        quantize_linear_weight_int8(model, config=Int8QTConfig(activation, grad_weight_compute))
+    elif weight == "int4":
+        assert activation == "none" and grad_weight_compute == "none"
         quantize_linear_weight_int4(model)
-    elif quantization is not None:
-        raise ValueError(f"Unsupported {quantization=}")
+    elif weight != "none":
+        raise ValueError(f"Unsupported {weight=}")
 
 
 def print_model_stats(model: nn.Module):

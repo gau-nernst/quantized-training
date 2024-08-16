@@ -41,7 +41,10 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--model_kwargs", type=json.loads, default=dict())
-    parser.add_argument("--model_quantize")
+
+    parser.add_argument("--weight_quantize", default="none")
+    parser.add_argument("--activation_quantize", default="none")
+    parser.add_argument("--grad_weight_compute", default="none")
     parser.add_argument("--compile", action="store_true")
 
     parser.add_argument("--n_epochs", type=int, default=10)
@@ -134,7 +137,7 @@ if __name__ == "__main__":
     model = timm.create_model(args.model, pretrained=True, num_classes=45, **args.model_kwargs)
     model.bfloat16().cuda()
     model.set_grad_checkpointing()
-    quantize_model(model, args.model_quantize)
+    quantize_model(model, args.weight_quantize, args.activation_quantize, args.grad_weight_compute)
     print_model_stats(model)
 
     optim_cls = get_optim_cls(args.optim)

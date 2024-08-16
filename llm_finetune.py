@@ -66,7 +66,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
     parser.add_argument("--freeze_embedding_layer", action="store_true")
-    parser.add_argument("--model_quantize")
+
+    parser.add_argument("--weight_quantize", default="none")
+    parser.add_argument("--activation_quantize", default="none")
+    parser.add_argument("--grad_weight_compute", default="none")
     parser.add_argument("--compile", action="store_true")
 
     parser.add_argument("--max_seq_len", type=int, default=2048)
@@ -103,7 +106,7 @@ if __name__ == "__main__":
         model.get_input_embeddings().requires_grad_(False)
 
     # don't quantize lm_head, since it might be weight-tied to input embeddings
-    quantize_model(model.get_decoder(), args.model_quantize)
+    quantize_model(model.get_decoder(), args.weight_quantize, args.activation_quantize, args.grad_weight_compute)
 
     print(f"Vocab size: {model.vocab_size:,}")
     print_model_stats(model)
