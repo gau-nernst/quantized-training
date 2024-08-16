@@ -15,8 +15,8 @@ def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int
     tensor = tensor.float()
 
     # absmax symmetric quantization
-    scale = tensor.abs().amax(dim) / 127
-    tensor = tensor / scale.clip(1e-12).unsqueeze(dim)
+    scale = tensor.abs().amax(dim, keepdim=True) / 127
+    tensor = tensor / scale.clip(1e-12)
 
     if stochastic_rounding:
         tensor = (tensor + torch.rand_like(tensor)).floor()
@@ -47,7 +47,7 @@ class Int8LinearWeight(Tensor):
     def __init__(self, int_data: Tensor, scale: Tensor, config: Int8QTConfig):
         assert int_data.dtype is torch.int8
         assert int_data.ndim == 2
-        assert scale.ndim == 1
+        assert scale.ndim == 2
         self.int_data = int_data
         self.scale = scale
         self.config = config
@@ -150,7 +150,7 @@ class _Int8Linear(torch.autograd.Function):
         if weight.config.activation == "none":
             # weight-only quantization
             # NOTE: we have to .T before .to(input.dtype) for torch.compile() mixed matmul to work
-            out = (input @ weight.int_data.T.to(input.dtype)) * weight.scale
+            out = (input @ weight.int_data.T.to(input.dtype)) * weight.scale.T
 
         else:
             # dynamic quantization
@@ -158,9 +158,13 @@ class _Int8Linear(torch.autograd.Function):
             input = input.view(-1, weight.shape[1])
             input_int_data, input_scale = quantize_int8(input, weight.config.activation == "int8_sr")
 
+            # optimization opportuntiy
+            # only calculate input_scale, don't quantize input yet
+            # fuse quan-int_mm-dequant together
+
             # INT8 x INT8 = INT32 matmul
             out_int32 = _int8_mm(input_int_data, weight.int_data.T)
-            out = out_int32 * input_scale.view(-1, 1) * weight.scale
+            out = out_int32 * input_scale * weight.scale.T
             out = out.view(*batch_dims, -1)
 
         out = out + bias if bias is not None else out
@@ -173,7 +177,7 @@ class _Int8Linear(torch.autograd.Function):
         input, weight = ctx.saved_tensors
         weight: Int8LinearWeight
 
-        grad_input = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
+        grad_input = (grad_output * weight.scale.T) @ weight.int_data.to(grad_output.dtype)
 
         grad_output = grad_output.view(-1, weight.shape[0])
         input = input.view(-1, weight.shape[1])
@@ -187,7 +191,7 @@ class _Int8Linear(torch.autograd.Function):
             input_i8, input_scale = quantize_int8(input, use_sr, dim=0)  # col-wise
 
             grad_weight_i32 = _int8_mm(grad_output_i8.T, input_i8)
-            grad_weight = grad_weight_i32 * grad_output_scale.view(-1, 1) * input_scale
+            grad_weight = grad_weight_i32 * grad_output_scale.T * input_scale
 
         grad_bias = grad_output.sum(0) if ctx.bias else None
         return grad_input, grad_weight, grad_bias
