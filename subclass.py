@@ -30,7 +30,6 @@ def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int
 
 class Int8QTConfig(NamedTuple):
     activation: Literal["none", "int8", "int8_sr"] = "none"
-    grad_weight_compute: Literal["none", "int8", "int8_sr"] = "none"
 
 
 class Int8LinearWeight(Tensor):
@@ -179,16 +178,9 @@ class _Int8Linear(torch.autograd.Function):
         grad_output = grad_output.view(-1, weight.shape[0])
         input = input.view(-1, weight.shape[1])
 
-        if weight.config.grad_weight_compute == "none":
-            grad_weight = grad_output.T @ input
-
-        else:
-            use_sr = weight.config.grad_weight_compute == "int8_sr"
-            grad_output_i8, grad_output_scale = quantize_int8(grad_output, use_sr, dim=0)  # col-wise
-            input_i8, input_scale = quantize_int8(input, use_sr, dim=0)  # col-wise
-
-            grad_weight_i32 = int8_mm(grad_output_i8.T, input_i8)
-            grad_weight = grad_weight_i32 * grad_output_scale.T * input_scale
+        # currently INT8 matmul is not fast for A.T @ B
+        # thus, there is no point trying to do INT8 matmul for grad_weight
+        grad_weight = grad_output.T @ input
 
         grad_bias = grad_output.sum(0) if ctx.bias else None
         return grad_input, grad_weight, grad_bias

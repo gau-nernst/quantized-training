@@ -16,11 +16,11 @@ def get_optim_cls(optim):
     return eval(optim, dict(torch=torch, optimizers=optimizers, bnb_optim=bnb_optim, partial=partial))
 
 
-def quantize_model(model: nn.Module, weight: str, activation: str, grad_weight_compute: str):
+def quantize_model(model: nn.Module, weight: str, activation: str):
     if weight == "int8":
-        quantize_linear_weight_int8(model, config=Int8QTConfig(activation, grad_weight_compute))
+        quantize_linear_weight_int8(model, config=Int8QTConfig(activation))
     elif weight == "int4":
-        assert activation == "none" and grad_weight_compute == "none"
+        assert activation == "none"
         quantize_linear_weight_int4(model)
     elif weight != "none":
         raise ValueError(f"Unsupported {weight=}")

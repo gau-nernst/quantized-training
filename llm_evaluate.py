@@ -12,7 +12,6 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
     parser.add_argument("--weight_quantize", default="none")
     parser.add_argument("--activation_quantize", default="none")
-    parser.add_argument("--grad_weight_compute", default="none")
 
     parser.add_argument("--checkpoint")
     parser.add_argument("--tasks", nargs="+", default=["gsm8k"])
@@ -36,7 +35,7 @@ if __name__ == "__main__":
         model.load_state_dict(state_dict, assign=True)
     model.to("cuda")
 
-    quantize_model(model.get_decoder(), args.weight_quantize, args.activation_quantize, args.grad_weight_compute)
+    quantize_model(model.get_decoder(), args.weight_quantize, args.activation_quantize)
 
     result = lm_eval.simple_evaluate(
         model=HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size, max_length=args.max_seq_len),
