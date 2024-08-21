@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from kernels import int8_mm
+from kernels import scaled_int8_mm
 
 aten = torch.ops.aten
 
@@ -155,12 +155,8 @@ class _Int8Linear(torch.autograd.Function):
             input_int_data, input_scale = quantize_int8(input, weight.config.activation == "int8_sr")
 
             # optimization opportuntiy
-            # only calculate input_scale, don't quantize input yet
-            # fuse quan-int_mm-dequant together
-
-            # INT8 x INT8 = INT32 matmul
-            out_int32 = int8_mm(input_int_data, weight.int_data.T)
-            out = out_int32 * input_scale * weight.scale.T
+            # we can fuse activation quantization into matmul too
+            out = scaled_int8_mm(input_int_data, weight.int_data.T, input_scale.view(-1), weight.scale.view(-1))
             out = out.view(*batch_dims, -1)
 
         out = out + bias if bias is not None else out
