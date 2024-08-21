@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 from triton.testing import do_bench
 
-from kernels import int8_mm
+from kernels import _int8_mm
 
 data = []
 sizes = [1024, 2048, 4096]
@@ -19,8 +19,8 @@ for sz in sizes:
 
         bf16_time = do_bench(lambda: A_bf16 @ B_bf16)
         i8_time = do_bench(lambda: torch._int_mm(A_i8, B_i8))
-        i8_triton_time = do_bench(lambda: int8_mm(A_i8, B_i8))
-        torch.testing.assert_close(int8_mm(A_i8, B_i8), int8_mm(A_i8, B_i8))
+        i8_triton_time = do_bench(lambda: _int8_mm(A_i8, B_i8))
+        torch.testing.assert_close(torch._int_mm(A_i8, B_i8), _int8_mm(A_i8, B_i8))
 
         data.append([sz, layout_str, bf16_time / i8_time, bf16_time / i8_triton_time])
 

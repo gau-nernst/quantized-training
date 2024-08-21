@@ -21,7 +21,7 @@ configs = [
 # https://github.com/pytorch/pytorch/blob/c2e2602ecdc2ec1f120e19198dfc18fc39f7bd09/torch/_inductor/kernel/mm.py
 @triton.autotune(configs=configs, key=["M", "N", "K"])
 @triton.jit
-def int8_mm_kernel(
+def _int8_mm_kernel(
     # fmt: off
     A_ptr, B_ptr, C_ptr,
     M, N, K,
@@ -81,7 +81,7 @@ def int8_mm_kernel(
     tl.store(C_ptr + tl.broadcast_to(xindex, mask.shape), acc, mask)
 
 
-def int8_mm(A: Tensor, B: Tensor, C: Tensor | None = None):
+def _int8_mm(A: Tensor, B: Tensor, C: Tensor | None = None):
     assert A.dtype is torch.int8 and B.dtype is torch.int8
     assert A.shape[1] == B.shape[0]
     M, K = A.shape
@@ -93,7 +93,7 @@ def int8_mm(A: Tensor, B: Tensor, C: Tensor | None = None):
 
     grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]) * triton.cdiv(N, meta["BLOCK_N"]),)
     # fmt: off
-    int8_mm_kernel[grid](
+    _int8_mm_kernel[grid](
         A, B, C, #
         M, N, K, #
         *A.stride(),
@@ -103,3 +103,17 @@ def int8_mm(A: Tensor, B: Tensor, C: Tensor | None = None):
     )
     # fmt: on
     return C
+
+
+_LIB_NAME = "qtrain"
+lib = torch.library.Library(_LIB_NAME, "FRAGMENT")
+lib.define("int8_mm(Tensor a, Tensor b) -> Tensor")
+int8_mm = getattr(torch.ops, _LIB_NAME).int8_mm
+torch.library.impl(lib, "int8_mm", "CUDA")(_int8_mm)
+
+
+@torch.library.impl(lib, "int8_mm", "Meta")
+def _(a, b):
+    M, K = a.shape
+    K, N = b.shape
+    return torch.empty((M, N), device=a.device, dtype=torch.int32)

@@ -4,7 +4,8 @@ from typing import Literal, NamedTuple
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch._higher_order_ops.out_dtype import out_dtype
+
+from kernels import int8_mm
 
 aten = torch.ops.aten
 
@@ -137,10 +138,6 @@ class Int8LinearWeight(Tensor):
         raise NotImplementedError(f"{cls.__name__} dispatch: attempting to run {func}, this is not supported")
 
 
-def _int8_mm(A: Tensor, B: Tensor):
-    return out_dtype(aten.mm.default, torch.int32, A, B)
-
-
 class _Int8Linear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input: Tensor, weight: Int8LinearWeight, bias: Tensor | None = None):
@@ -163,7 +160,7 @@ class _Int8Linear(torch.autograd.Function):
             # fuse quan-int_mm-dequant together
 
             # INT8 x INT8 = INT32 matmul
-            out_int32 = _int8_mm(input_int_data, weight.int_data.T)
+            out_int32 = int8_mm(input_int_data, weight.int_data.T)
             out = out_int32 * input_scale * weight.scale.T
             out = out.view(*batch_dims, -1)
 
@@ -190,7 +187,7 @@ class _Int8Linear(torch.autograd.Function):
             grad_output_i8, grad_output_scale = quantize_int8(grad_output, use_sr, dim=0)  # col-wise
             input_i8, input_scale = quantize_int8(input, use_sr, dim=0)  # col-wise
 
-            grad_weight_i32 = _int8_mm(grad_output_i8.T, input_i8)
+            grad_weight_i32 = int8_mm(grad_output_i8.T, input_i8)
             grad_weight = grad_weight_i32 * grad_output_scale.T * input_scale
 
         grad_bias = grad_output.sum(0) if ctx.bias else None
