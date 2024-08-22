@@ -5,7 +5,7 @@ from torch import nn
 
 import bnb_optim
 import optimizers
-from subclass import Int8QTConfig, quantize_linear_weight_int4, quantize_linear_weight_int8
+from subclasses import Int8QTConfig, quantize_linear_weight_int4, quantize_linear_weight_int8
 
 
 def get_grad_norm(model: nn.Module):
