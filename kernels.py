@@ -7,17 +7,43 @@ _LIB_NAME = "qtrain"
 lib = torch.library.Library(_LIB_NAME, "DEF")
 
 
-# from "Good config for fp8 inputs."
 # https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html
+# (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps)
 configs = [
-    triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 128}, num_stages=3, num_warps=8),
-    triton.Config({"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 128}, num_stages=3, num_warps=8),
-    triton.Config({"BLOCK_M": 256, "BLOCK_N": 64, "BLOCK_K": 128}, num_stages=4, num_warps=4),
-    triton.Config({"BLOCK_M": 64, "BLOCK_N": 256, "BLOCK_K": 128}, num_stages=4, num_warps=4),
-    triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 128}, num_stages=4, num_warps=4),
-    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 64}, num_stages=4, num_warps=4),
-    triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64}, num_stages=4, num_warps=4),
-    triton.Config({"BLOCK_M": 128, "BLOCK_N": 32, "BLOCK_K": 64}, num_stages=4, num_warps=4),
+    (128, 256, 64, 3, 8),
+    (64, 256, 32, 4, 4),
+    (128, 128, 32, 4, 4),
+    (128, 64, 32, 4, 4),
+    (64, 128, 32, 4, 4),
+    (128, 32, 32, 4, 4),
+    (64, 32, 32, 5, 2),
+    (32, 64, 32, 5, 2),
+    # Good config for fp8 inputs
+    (128, 256, 128, 3, 8),
+    (256, 128, 128, 3, 8),
+    (256, 64, 128, 4, 4),
+    (64, 256, 128, 4, 4),
+    (128, 128, 128, 4, 4),
+    (128, 64, 64, 4, 4),
+    (64, 128, 64, 4, 4),
+    (128, 32, 64, 4, 4),
+    # https://github.com/pytorch/pytorch/blob/7868b65c4d4f34133607b0166f08e9fbf3b257c4/torch/_inductor/kernel/mm_common.py#L172
+    (64, 64, 32, 2, 4),
+    (64, 128, 32, 3, 4),
+    (128, 64, 32, 3, 4),
+    (64, 128, 32, 4, 8),
+    (128, 64, 32, 4, 8),
+    (64, 32, 32, 5, 8),
+    (32, 64, 32, 5, 8),
+    (128, 128, 32, 2, 8),
+    (64, 64, 64, 3, 8),
+    (128, 256, 128, 3, 8),
+    (256, 128, 128, 3, 8),
+]
+
+configs = [
+    triton.Config(dict(BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K), num_stages=num_stages, num_warps=num_warps)
+    for BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps in configs
 ]
 
 
@@ -27,7 +53,8 @@ def _grid(meta):
 
 # templated matmul from pytorch
 # https://github.com/pytorch/pytorch/blob/c2e2602ecdc2ec1f120e19198dfc18fc39f7bd09/torch/_inductor/kernel/mm.py
-@triton.autotune(configs=configs, key=["M", "N", "K"])
+# also re-tune when stride changes i.e. transpose configuration
+@triton.autotune(configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk"])
 @triton.jit
 def _int8_mm_kernel(
     # fmt: off

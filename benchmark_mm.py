@@ -17,9 +17,9 @@ for sz in sizes:
         A_i8 = torch.randint(-128, 127, size=(sz, sz), dtype=torch.int8).cuda().transpose(0, ta)
         B_i8 = torch.randint(-128, 127, size=(sz, sz), dtype=torch.int8).cuda().transpose(0, tb)
 
-        bf16_time = do_bench(lambda: A_bf16 @ B_bf16)
-        i8_time = do_bench(lambda: torch._int_mm(A_i8, B_i8))
-        i8_triton_time = do_bench(lambda: _int8_mm(A_i8, B_i8))
+        bf16_time = do_bench(lambda: A_bf16 @ B_bf16, fast_flush=False, return_mode="median")
+        i8_time = do_bench(lambda: torch._int_mm(A_i8, B_i8), fast_flush=False, return_mode="median")
+        i8_triton_time = do_bench(lambda: _int8_mm(A_i8, B_i8), fast_flush=False, return_mode="median")
         torch.testing.assert_close(torch._int_mm(A_i8, B_i8), _int8_mm(A_i8, B_i8))
 
         data.append([sz, layout_str, bf16_time / i8_time, bf16_time / i8_triton_time])

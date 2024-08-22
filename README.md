@@ -50,11 +50,11 @@ Benchmark INT8 matmul. 4070Ti SUPER. Speedup over PyTorch BF16 matmul.
 Kernel       | `A @ B`  | `A @ B.T` | `A.T @ B`
 -------------|----------|-----------|----------
 `M = N = K = 1024`
-PyTorch INT8 | 1.03     | 1.90      | 1.09
-Triton INT8  | 1.62     | 2.54      | 1.18
+PyTorch INT8 | 1.03     | 1.82      | 1.11
+Triton INT8  | 1.63     | 2.50      | 1.56
 `M = N = K = 2048`
-PyTorch INT8 | 0.96     | 2.04      | 0.97
-Triton INT8  | 1.84     | 2.91      | 1.01
+PyTorch INT8 | 0.99     | 1.96      | 0.93
+Triton INT8  | 2.11     | 2.87      | 1.44
 `M = N = K = 4096`
-PyTorch INT8 | 0.93     | 3.19      | 0.96
-Triton INT8  | 2.02     | 3.25      | 1.12
+PyTorch INT8 | 0.91     | 3.16      | 0.92
+Triton INT8  | 2.21     | 3.23      | 1.53
