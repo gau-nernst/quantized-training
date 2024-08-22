@@ -67,6 +67,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--weight_quantize", default="none")
     parser.add_argument("--activation_quantize", default="none")
+    parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--activation_checkpointing", action="store_true")
 
     parser.add_argument("--n_steps", type=int, default=1000)
@@ -103,7 +104,9 @@ if __name__ == "__main__":
     model = LlamaForCausalLM(config).bfloat16().cuda()
     if args.activation_checkpointing:
         model.gradient_checkpointing_enable()
-    quantize_model(model, args.weight_quantize, args.activation_quantize)
+    quantize_model(model.model, args.weight_quantize, args.activation_quantize)
+    if args.quantize_lm_head:
+        quantize_model(model.lm_head, args.weight_quantize, args.activation_quantize)
     print_model_stats(model)
 
     optim_cls = get_optim_cls(args.optim)
