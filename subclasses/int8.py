@@ -4,19 +4,16 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from kernels import scaled_int8_mm_bf16
+from kernels import scaled_int8_mm
 
 aten = torch.ops.aten
 
 
 @torch.no_grad()
 def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int = -1):
-    original_dtype = tensor.dtype
-    tensor = tensor.float()
-
     # absmax symmetric quantization
     scale = tensor.abs().amax(dim, keepdim=True) / 127
-    tensor = tensor / scale.clip(1e-12)
+    tensor = tensor.float() / scale.clip(1e-12)
 
     if stochastic_rounding:
         tensor = (tensor + torch.rand_like(tensor)).floor()
@@ -24,7 +21,7 @@ def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int
         tensor = tensor.round()
 
     tensor = tensor.clip(-128, 127).to(torch.int8)
-    return tensor, scale.to(original_dtype)
+    return tensor, scale
 
 
 class Int8QTConfig(NamedTuple):
@@ -155,7 +152,7 @@ class _Int8Linear(torch.autograd.Function):
 
             # optimization opportuntiy
             # we can fuse activation quantization into matmul too
-            out = scaled_int8_mm_bf16(input_int_data, weight.int_data.T, input_scale.view(-1), weight.scale.view(-1))
+            out = scaled_int8_mm(input_int_data, weight.int_data.T, input_scale.view(-1), weight.scale.view(-1))
             out = out.view(*batch_dims, -1)
 
         out = out + bias if bias is not None else out

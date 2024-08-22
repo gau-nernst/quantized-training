@@ -203,27 +203,27 @@ def _scaled_int8_mm_kernel(
     tl.store(C_ptr + tl.broadcast_to(xindex, mask.shape), acc, mask)
 
 
-lib.define("scaled_int8_mm_bf16(Tensor A, Tensor B, Tensor A_scale, Tensor B_scale) -> Tensor")
+lib.define("scaled_int8_mm(Tensor A, Tensor B, Tensor A_scale, Tensor B_scale) -> Tensor")
 
 
-def scaled_int8_mm_bf16(A: Tensor, B: Tensor, A_scale_rowwise: Tensor, B_scale_colwise: Tensor) -> Tensor:
-    return lib_ops.scaled_int8_mm_bf16(A, B, A_scale_rowwise, B_scale_colwise)
+def scaled_int8_mm(A: Tensor, B: Tensor, A_scale_rowwise: Tensor, B_scale_colwise: Tensor) -> Tensor:
+    return lib_ops.scaled_int8_mm(A, B, A_scale_rowwise, B_scale_colwise)
 
 
-@torch.library.impl(lib, "scaled_int8_mm_bf16", "Meta")
+@torch.library.impl(lib, "scaled_int8_mm", "Meta")
 def _(A: Tensor, B: Tensor, A_scale_rowwise: Tensor, B_scale_colwise: Tensor):
-    return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=torch.bfloat16)
+    return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=A_scale_rowwise.dtype)
 
 
-@torch.library.impl(lib, "scaled_int8_mm_bf16", "CUDA")
-def _scaled_int8_mm_bf16(A: Tensor, B: Tensor, A_scale_rowwise: Tensor, B_scale_colwise: Tensor):
+@torch.library.impl(lib, "scaled_int8_mm", "CUDA")
+def _scaled_int8_mm(A: Tensor, B: Tensor, A_scale_rowwise: Tensor, B_scale_colwise: Tensor):
     assert A.dtype is torch.int8 and B.dtype is torch.int8
     assert A.shape[1] == B.shape[0]
     M, K = A.shape
     _, N = B.shape
     assert A_scale_rowwise.shape == (M,)
     assert B_scale_colwise.shape == (N,)
-    C = torch.empty(M, N, device=A.device, dtype=torch.bfloat16)
+    C = torch.empty(M, N, device=A.device, dtype=A_scale_rowwise.dtype)
     _scaled_int8_mm_kernel[_grid](
         A, B, C, A_scale_rowwise, B_scale_colwise, M, N, K, *A.stride(), *B.stride(), *C.stride(), EVEN_K=K % 2 == 0
     )

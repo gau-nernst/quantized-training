@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from kernels import scaled_int8_mm_bf16
+from kernels import scaled_int8_mm
 
 from .int8 import quantize_int8
 
@@ -75,7 +75,7 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
             input = input.view(-1, weight.shape[1])
             input_i8, input_scale = quantize_int8(input, sr, dim=1)
             weight_i8, weight_scale = quantize_int8(weight, sr, dim=1)
-            out = scaled_int8_mm_bf16(input_i8, weight_i8.T, input_scale.view(-1), weight_scale.view(-1))
+            out = scaled_int8_mm(input_i8, weight_i8.T, input_scale.view(-1), weight_scale.view(-1))
             out = out.view(*batch_dims, weight.shape[0])
 
         else:
@@ -97,7 +97,7 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         if weight.config.backward_input:
             grad_output_i8, grad_output_scale = quantize_int8(grad_output, sr, dim=1)
             weight_i8_t, weight_scale = quantize_int8(weight.T, sr, dim=1)
-            grad_input = scaled_int8_mm_bf16(
+            grad_input = scaled_int8_mm(
                 grad_output_i8, weight_i8_t.T, grad_output_scale.view(-1), weight_scale.view(-1)
             )
 
@@ -112,7 +112,7 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         elif weight.config.backward_weight:
             grad_output_i8_t, grad_output_scale = quantize_int8(grad_output.T, sr, dim=1)
             input_i8_t, input_scale = quantize_int8(input.T, sr, dim=1)
-            grad_weight = scaled_int8_mm_bf16(
+            grad_weight = scaled_int8_mm(
                 grad_output_i8_t, input_i8_t.T, grad_output_scale.view(-1), input_scale.view(-1)
             )
 
