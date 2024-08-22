@@ -147,7 +147,7 @@ def _(a: Tensor, b: Tensor):
     return torch.empty((a.shape[0], b.shape[1]), device=a.device, dtype=torch.int32)
 
 
-@triton.autotune(configs=configs, key=["M", "N", "K"])
+@triton.autotune(configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk"])
 @triton.jit
 def _scaled_int8_mm_kernel(
     # fmt: off
@@ -310,7 +310,7 @@ def _scaled_int8_mm_v2_kernel(
             b = tl.load(B, mask=rk[:, None] < k, other=0.0)
         a = a.to(tl.float32) * a_inv_scale
         if STOCHASTIC_ROUNDING:
-            tl.static_assert(True, "STOCHASTIC_ROUNDING is not implemented")
+            tl.static_assert(False, "STOCHASTIC_ROUNDING is not implemented")
         else:
             a = tl.extra.libdevice.rint(a)
         acc += tl.dot(a.to(tl.int8), b)
