@@ -18,7 +18,9 @@ from train_utils import get_grad_norm, get_optim_cls, print_model_stats, quantiz
 
 
 def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
-    return model(batch, labels=batch).loss
+    logits = model(batch[:, :-1].long()).logits.flatten(0, 1)
+    labels = batch[:, 1:].long().flatten()
+    return torch.nn.functional.cross_entropy(logits, labels)
 
 
 def get_tinystories(split: str):
@@ -127,8 +129,10 @@ if __name__ == "__main__":
     while step < args.n_steps:
         for _ in range(args.gradient_accumulation):
             # randomly select a continuous chunk, then reshape it
-            idx = torch.randint(0, data.shape[0] - bsize * args.seq_len, (1,)).item()
-            batch = data[idx : idx + bsize * args.seq_len].view(bsize, args.seq_len).long()
+            # notice seq_len + 1. we will slice the data inside get_loss()
+            n_toks = bsize * (args.seq_len + 1)
+            idx = torch.randint(0, data.shape[0] - n_toks, (1,)).item()
+            batch = data[idx : idx + n_toks].view(bsize, args.seq_len + 1)
 
             loss = torch.compile(get_loss)(model, batch)
             loss.backward()
