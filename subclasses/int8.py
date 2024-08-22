@@ -181,7 +181,7 @@ class _Int8Linear(torch.autograd.Function):
         return grad_input, grad_weight, grad_bias
 
 
-def quantize_linear_weight_int8(module: nn.Module, *, config: Int8QTConfig = Int8QTConfig()):
+def convert_int8_quantized_training(module: nn.Module, *, config: Int8QTConfig = Int8QTConfig()):
     if isinstance(module, nn.Linear):
         module.weight = nn.Parameter(
             Int8LinearWeight.from_float(module.weight, config=config),
@@ -189,5 +189,5 @@ def quantize_linear_weight_int8(module: nn.Module, *, config: Int8QTConfig = Int
         )
     else:
         for m in module.children():
-            quantize_linear_weight_int8(m, config=config)
+            convert_int8_quantized_training(m, config=config)
     return module

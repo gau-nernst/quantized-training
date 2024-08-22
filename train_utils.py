@@ -5,7 +5,13 @@ from torch import nn
 
 import bnb_optim
 import optimizers
-from subclasses import Int8QTConfig, quantize_linear_weight_int4, quantize_linear_weight_int8
+from subclasses import (
+    Int8MixedPrecisionConfig,
+    Int8QTConfig,
+    convert_int4_quantized_training,
+    convert_int8_mixed_precision,
+    convert_int8_quantized_training,
+)
 
 
 def get_grad_norm(model: nn.Module):
@@ -17,11 +23,15 @@ def get_optim_cls(optim):
 
 
 def quantize_model(model: nn.Module, weight: str, activation: str):
-    if weight == "int8":
-        quantize_linear_weight_int8(model, config=Int8QTConfig(activation))
+    # TODO: rethink this again...
+    if weight == "int8_mixed_precision":
+        assert activation == "none"
+        convert_int8_mixed_precision(model, config=Int8MixedPrecisionConfig(forward=True, backward_input=True))
+    elif weight == "int8":
+        convert_int8_quantized_training(model, config=Int8QTConfig(activation))
     elif weight == "int4":
         assert activation == "none"
-        quantize_linear_weight_int4(model)
+        convert_int4_quantized_training(model)
     elif weight != "none":
         raise ValueError(f"Unsupported {weight=}")
 

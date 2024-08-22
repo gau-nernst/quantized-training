@@ -1,2 +1,3 @@
-from .int4 import quantize_linear_weight_int4
-from .int8 import Int8QTConfig, quantize_linear_weight_int8
+from .int4 import convert_int4_quantized_training
+from .int8 import Int8QTConfig, convert_int8_quantized_training
+from .int8_mixed_precision import Int8MixedPrecisionConfig, convert_int8_mixed_precision

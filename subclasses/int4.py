@@ -164,7 +164,7 @@ class Int4WeightOnlyLinear(torch.autograd.Function):
 int4_weight_only_linear = Int4WeightOnlyLinear.apply
 
 
-def quantize_linear_weight_int4(module: nn.Module, group_size: int = 32):
+def convert_int4_quantized_training(module: nn.Module, group_size: int = 32):
     if isinstance(module, nn.Linear):
         module.weight = nn.Parameter(
             Int4LinearWeight.from_float(module.weight, group_size=group_size),
@@ -172,5 +172,5 @@ def quantize_linear_weight_int4(module: nn.Module, group_size: int = 32):
         )
     else:
         for m in module.children():
-            quantize_linear_weight_int4(m)
+            convert_int4_quantized_training(m, group_size)
     return module
