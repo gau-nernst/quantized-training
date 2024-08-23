@@ -87,6 +87,8 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         input, weight = ctx.saved_tensors
+        grad_input = grad_weight = grad_bias = None
+
         weight: Int8MixedPrecisionLinearWeight
         sr = weight.config.stochastic_rounding
 
@@ -94,32 +96,30 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         grad_output = grad_output.view(-1, weight.shape[0])
         input = input.view(-1, weight.shape[1])
 
-        if weight.config.backward_grad_input:
-            grad_output_i8, grad_output_scale = quantize_int8(grad_output, sr, dim=1)
-            weight_i8_t, weight_scale = quantize_int8(weight.T, sr, dim=1)
-            grad_input = scaled_int8_mm(
-                grad_output_i8, weight_i8_t.T, grad_output_scale.view(-1), weight_scale.view(-1)
-            )
+        if ctx.needs_input_grad[0]:
+            if weight.config.backward_grad_input:
+                grad_output_i8, grad_output_scale = quantize_int8(grad_output, sr, dim=1)
+                weight_i8_t, weight_scale = quantize_int8(weight.T, sr, dim=1)
+                grad_input = scaled_int8_mm(
+                    grad_output_i8, weight_i8_t.T, grad_output_scale.view(-1), weight_scale.view(-1)
+                )
+            else:
+                grad_input = grad_output @ weight
+            grad_input = grad_input.view(*batch_dims, weight.shape[1])
 
-        else:
-            grad_input = grad_output @ weight
+        if ctx.needs_input_grad[1]:
+            if weight.config.backward_grad_weight:
+                grad_output_i8_t, grad_output_scale = quantize_int8(grad_output.T, sr, dim=1)
+                input_i8_t, input_scale = quantize_int8(input.T, sr, dim=1)
+                grad_weight = scaled_int8_mm(
+                    grad_output_i8_t, input_i8_t.T, grad_output_scale.view(-1), input_scale.view(-1)
+                )
+            else:
+                grad_weight = grad_output.T @ input
 
-        grad_input = grad_input.view(*batch_dims, weight.shape[1])
+        if ctx.needs_input_grad[2] and ctx.bias:
+            grad_bias = grad_output.sum(0)
 
-        if not weight.requires_grad:
-            grad_weight = None
-
-        elif weight.config.backward_grad_weight:
-            grad_output_i8_t, grad_output_scale = quantize_int8(grad_output.T, sr, dim=1)
-            input_i8_t, input_scale = quantize_int8(input.T, sr, dim=1)
-            grad_weight = scaled_int8_mm(
-                grad_output_i8_t, input_i8_t.T, grad_output_scale.view(-1), input_scale.view(-1)
-            )
-
-        else:
-            grad_weight = grad_output.T @ input
-
-        grad_bias = grad_output.sum(0) if ctx.bias else None
         return grad_input, grad_weight, grad_bias
 
 
