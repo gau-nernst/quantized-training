@@ -43,9 +43,11 @@ python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_laye
 python llm_tinystories_pretrain.py --seed 2024 --n_steps 100_000 --model_quantize int8
 ```
 
-## Triton kernels
+## Speed benchmarks
 
-Benchmark INT8 matmul. 4070Ti SUPER. Speedup over PyTorch BF16 matmul.
+### INT8 matmul
+
+4070Ti SUPER. Speedup over PyTorch BF16 matmul.
 
 Kernel       | `A @ B`  | `A @ B.T` | `A.T @ B`
 -------------|----------|-----------|----------
@@ -58,3 +60,19 @@ Triton INT8  | 2.11     | 2.87      | 1.44
 `M = N = K = 4096`
 PyTorch INT8 | 0.91     | 3.16      | 0.92
 Triton INT8  | 2.21     | 3.23      | 1.53
+
+### INT8 mixed precision training
+
+4070Ti SUPER. Llama2-1B, bs=16, seq_len=2048. INT8 means dynamically perform row-wise quantization + scaled INT8 matmul. Exclude LM head.
+
+Forward | Backward grad input | Backward grad weight | Stochastic rounding | tok/s  | Speedup
+--------|---------------------|----------------------|---------------------|--------|--------
+BF16    | BF16                | BF16                 | -                   |  9,223 | 1.00
+INT8    | BF16                | BF16                 | ❌                  | 11,751 | 1.27
+INT8    | BF16                | BF16                 | ✅                  | 10,944 | 1.19
+INT8    | INT8                | BF16                 | ❌                  | 13,678 | 1.48
+INT8    | INT8                | BF16                 | ✅                  | 12,028 | 1.30
+INT8    | INT8                | INT8                 | ❌                  | 15,517 | 1.68
+INT8    | INT8                | INT8                 | ✅                  | OOM
+
+When stochastic rounding is used and backward is applied INT8 matmul, there is a significant increase in memory. To be investigated.
