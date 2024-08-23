@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import torch
 from tqdm import tqdm
@@ -15,8 +16,9 @@ if __name__ == "__main__":
     parser.add_argument("--ffn_size", type=int, default=4096)
     parser.add_argument("--head_dim", type=int, default=64)
 
-    parser.add_argument("--weight_quantize", default="none")
-    parser.add_argument("--activation_quantize", default="none")
+    parser.add_argument("--int8_mixed_precision", type=json.loads)
+    parser.add_argument("--int8_quantized_training", type=json.loads)
+    parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--seq_len", type=int, default=2048)
     parser.add_argument("--checkpoint", required=True)
     args = parser.parse_args()
@@ -33,7 +35,9 @@ if __name__ == "__main__":
     state_dict = torch.load(args.checkpoint, map_location="cpu", mmap=True)
     model.load_state_dict(state_dict["model"])
 
-    quantize_model(model, args.weight_quantize, args.activation_quantize)
+    quantize_model(model.model, args.int8_mixed_precision, args.int8_quantized_training)
+    if args.quantize_lm_head:
+        quantize_model(model.lm_head, args.int8_mixed_precision, args.int8_quantized_training)
     print_model_stats(model)
 
     data = get_tinystories("valid").cuda()

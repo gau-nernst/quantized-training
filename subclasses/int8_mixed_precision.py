@@ -13,8 +13,8 @@ aten = torch.ops.aten
 
 class Int8MixedPrecisionConfig(NamedTuple):
     forward: bool = False
-    backward_input: bool = False
-    backward_weight: bool = False
+    backward_grad_input: bool = False
+    backward_grad_weight: bool = False
     stochastic_rounding: bool = False
 
 
@@ -94,7 +94,7 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         grad_output = grad_output.view(-1, weight.shape[0])
         input = input.view(-1, weight.shape[1])
 
-        if weight.config.backward_input:
+        if weight.config.backward_grad_input:
             grad_output_i8, grad_output_scale = quantize_int8(grad_output, sr, dim=1)
             weight_i8_t, weight_scale = quantize_int8(weight.T, sr, dim=1)
             grad_input = scaled_int8_mm(
@@ -109,7 +109,7 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         if not weight.requires_grad:
             grad_weight = None
 
-        elif weight.config.backward_weight:
+        elif weight.config.backward_grad_weight:
             grad_output_i8_t, grad_output_scale = quantize_int8(grad_output.T, sr, dim=1)
             input_i8_t, input_scale = quantize_int8(input.T, sr, dim=1)
             grad_weight = scaled_int8_mm(

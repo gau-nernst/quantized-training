@@ -67,8 +67,8 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="Qwen/Qwen2-0.5B-Instruct")
     parser.add_argument("--freeze_embedding_layer", action="store_true")
 
-    parser.add_argument("--weight_quantize", default="none")
-    parser.add_argument("--activation_quantize", default="none")
+    parser.add_argument("--int8_mixed_precision", type=json.loads)
+    parser.add_argument("--int8_quantized_training", type=json.loads)
     parser.add_argument("--compile", action="store_true")
 
     parser.add_argument("--max_seq_len", type=int, default=2048)
@@ -105,7 +105,7 @@ if __name__ == "__main__":
         model.get_input_embeddings().requires_grad_(False)
 
     # don't quantize lm_head, since it might be weight-tied to input embeddings
-    quantize_model(model.get_decoder(), args.weight_quantize, args.activation_quantize)
+    quantize_model(model.get_decoder(), args.int8_mixed_precision, args.int8_quantized_training)
 
     print(f"Vocab size: {model.vocab_size:,}")
     print_model_stats(model)
