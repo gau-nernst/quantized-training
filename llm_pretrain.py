@@ -131,7 +131,7 @@ if __name__ == "__main__":
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, args.n_steps) if args.cosine_lr_schedule else None
 
-    ds = TokenDataset(args.dataset_dir, "train", args.batch_size, args.seq_len)
+    ds = TokenDataset(args.dataset_dir, args.batch_size, args.seq_len)
     dloader = iter(DataLoader(ds, batch_size=None, num_workers=args.n_workers, pin_memory=True))
 
     save_dir = Path("runs/llm_pretrain") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.run_name}"
