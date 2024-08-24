@@ -28,7 +28,7 @@ pip install -r requirements.txt
 **ViT fine-tuning on RESISC45**
 
 ```
-python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs 2 --batch_size 64 --model_kwargs '{"img_size":224}' --seed 2024 --model_quantize int8 --compile
+python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs 2 --batch_size 64 --model_kwargs '{"img_size":224}' --seed 2024 --compile
 ```
 
 **LLM fine-tuning on MetaMathQA**
@@ -37,10 +37,18 @@ python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs
 python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_layer --batch_size 4 --n_steps 100_000 --ckpt_interval 10_000 --seed 2024 --compile
 ```
 
-**LLM pre-training on TinyStories**
+**LLM pre-training**
+
+Prepare data: either download from [gaunernst/tokenized-datasets](https://huggingface.co/datasets/gaunernst/tokenized-datasets) or run
 
 ```
-python llm_tinystories_pretrain.py --seed 2024 --n_steps 100_000 --model_quantize int8
+python tokenize_data.py --dataset tinystories --split train
+```
+
+Then you can run (`--dataset_dir` should contain `.bin` files)
+
+```
+python llm_pretrain.py --dataset_dir tinystories_train --seed 2024
 ```
 
 ## Speed benchmarks

@@ -4,3 +4,6 @@ __pycache__/
 wandb_logs/
 checkpoints/
 runs/
+*.bin
+*.model
+COMPLETE
