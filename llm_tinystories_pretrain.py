@@ -21,12 +21,6 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from train_utils import get_grad_norm, get_optim_cls, print_model_stats, quantize_model
 
 
-def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
-    logits = model(batch[:, :-1].long()).logits.flatten(0, 1)
-    labels = batch[:, 1:].long().flatten()
-    return torch.nn.functional.cross_entropy(logits, labels)
-
-
 def _process_tinystories(tokenizer: spm.SentencePieceProcessor, split: str, save_path: str):
     # do everything in memory. we have enough RAM
     filepath = hf_hub_download("roneneldan/TinyStories", f"TinyStoriesV2-GPT4-{split}.txt", repo_type="dataset")
@@ -91,6 +85,28 @@ class TokenDataset(IterableDataset):
                     yield batch.long()
 
 
+class CosineSchedule:
+    def __init__(self, lr: float, total_steps: int, warmup: float = 0.05) -> None:
+        self.lr = lr
+        self.final_lr = 0
+        self.total_steps = total_steps
+        self.warmup_steps = int(total_steps * warmup)
+
+    def get_lr(self, step: int) -> float:
+        if step < self.warmup_steps:
+            return self.lr * step / self.warmup_steps
+        if step < self.total_steps:
+            progress = (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+            return self.final_lr + 0.5 * (self.lr - self.final_lr) * (1 + math.cos(progress * math.pi))
+        return self.final_lr
+
+
+def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
+    logits = model(batch[:, :-1].long()).logits.flatten(0, 1)
+    labels = batch[:, 1:].long().flatten()
+    return torch.nn.functional.cross_entropy(logits, labels)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # default config is 470M
@@ -114,6 +130,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
+    parser.add_argument("--cosine_lr_schedule", action="store_true")
 
     parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project", default="llm_pretraining")
@@ -146,6 +163,7 @@ if __name__ == "__main__":
 
     optim_cls = get_optim_cls(args.optim)
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
+    lr_schedule = CosineSchedule(args.lr, args.n_steps) if args.cosine_lr_schedule else None
 
     ds = TokenDataset(args.dataset, "train", args.batch_size, args.seq_len)
     dloader = iter(DataLoader(ds, batch_size=None, num_workers=1, pin_memory=True))
@@ -185,6 +203,11 @@ if __name__ == "__main__":
                 time0 = time1
             run.log(log_dict, step=step)
             pbar.set_postfix(loss=log_dict["loss"])
+
+        if lr_schedule is not None:
+            lr = lr_schedule.get_lr(step)
+            for param_group in optim.param_groups:
+                param_group["lr"] = lr
 
         optim.step()
         optim.zero_grad()
