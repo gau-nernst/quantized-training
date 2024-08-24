@@ -4,13 +4,17 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import argparse
 import json
+import math
 import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import sentencepiece as spm
 import torch
 import wandb
+from huggingface_hub import hf_hub_download
+from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
 
@@ -23,38 +27,68 @@ def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
     return torch.nn.functional.cross_entropy(logits, labels)
 
 
-def get_tinystories(split: str):
-    assert split in ("train", "valid")
-    save_path = Path(f"tinystories_{split}.bin")
+def _process_tinystories(tokenizer: spm.SentencePieceProcessor, split: str, save_path: str):
+    # do everything in memory. we have enough RAM
+    filepath = hf_hub_download("roneneldan/TinyStories", f"TinyStoriesV2-GPT4-{split}.txt", repo_type="dataset")
+    stories = open(filepath).read().split("\n<|endoftext|>\n")
 
-    if not save_path.exists():
-        import sentencepiece as spm
-        from huggingface_hub import hf_hub_download
+    tokens_list = []
+    chunk_size = 10_000
+    for i in tqdm(range(0, len(stories), chunk_size), desc="Tokenizing TinyStories"):
+        chunk = stories[i : min(i + chunk_size, len(stories))]
+        tokens_list.extend(tokenizer.Encode(chunk, add_bos=True, add_eos=True, num_threads=4))
 
-        tokenizer_path = hf_hub_download("meta-llama/Llama-2-7b", "tokenizer.model")
-        tokenizer = spm.SentencePieceProcessor(tokenizer_path)
-        assert tokenizer.vocab_size() < (1 << 16)  # make sure we can use uint16
+    total_size = sum(len(x) for x in tokens_list)
+    mmap_tokens = np.memmap(save_path, dtype=np.uint16, mode="w+", shape=total_size)
+    i = 0
+    for tokens in tokens_list:
+        mmap_tokens[i : i + len(tokens)] = tokens
+        i += len(tokens)
+    mmap_tokens.flush()
 
-        # do everything in memory. we have enough RAM
-        filepath = hf_hub_download("roneneldan/TinyStories", f"TinyStoriesV2-GPT4-{split}.txt", repo_type="dataset")
-        stories = open(filepath).read().split("\n<|endoftext|>\n")
 
-        tokens_list = []
-        chunk_size = 10_000
-        for i in tqdm(range(0, len(stories), chunk_size), desc="Tokenizing TinyStories"):
-            chunk = stories[i : min(i + chunk_size, len(stories))]
-            tokens_list.extend(tokenizer.Encode(chunk, add_bos=True, add_eos=True, num_threads=4))
+class TokenDataset(IterableDataset):
+    def __init__(self, dataset: str, split: str, batch_size: int, seq_len: int) -> None:
+        super().__init__()
+        self.save_dir = Path(f"{dataset}_{split}")
+        self.batch_size = batch_size
+        self.seq_len = seq_len
 
-        total_size = sum(len(x) for x in tokens_list)
-        mmap_tokens = np.memmap(save_path, dtype=np.uint16, mode="w+", shape=total_size)
-        i = 0
-        for tokens in tokens_list:
-            mmap_tokens[i : i + len(tokens)] = tokens
-            i += len(tokens)
-        mmap_tokens.flush()
+        marker = self.save_dir / "COMPLETE"
+        if not marker.exists():
+            tokenizer_path = hf_hub_download("meta-llama/Llama-2-7b", "tokenizer.model")
+            tokenizer = spm.SentencePieceProcessor(tokenizer_path)
+            assert tokenizer.vocab_size() < (1 << 16)  # make sure we can use uint16
 
-    tokens = np.memmap(save_path, dtype=np.uint16, mode="r")
-    return torch.from_numpy(tokens)
+            self.save_dir.mkdir(exist_ok=True)
+            if dataset == "tinystories":
+                _process_tinystories(tokenizer, split, self.save_dir / "data.bin")
+            else:
+                raise ValueError(f"Unsupported {dataset=}")
+            open(marker, "w").close()  # create an empty file
+
+    def __iter__(self):
+        shards = sorted(self.save_dir.glob("*.bin"))
+        toks_per_batch = self.batch_size * (self.seq_len + 1)
+
+        while True:
+            # NOTE: we don't split data across workers. just depend on workers having different
+            # random seeds to select different slice of data.
+            shard_indices = torch.randperm(len(shards))
+            for shard_idx in shard_indices:
+                # divide a shard into n slices of toks_per_batch
+                # to make sure the slices are slightly different everytime, we add a random offset
+                # offset in np.memmap is in bytes, so need to times 2
+                offset = torch.randint(0, toks_per_batch, size=(1,)).item()
+                shard_np = np.memmap(shards[shard_idx], dtype=np.uint16, mode="r", offset=offset * 2)
+                shard = torch.from_numpy(shard_np)
+
+                n_slices = math.floor(shard.shape[0] / toks_per_batch)
+                slice_indices = torch.randperm(n_slices)
+                for slice_idx in slice_indices:
+                    batch = shard[slice_idx * toks_per_batch : (slice_idx + 1) * toks_per_batch]
+                    batch = batch.view(self.batch_size, self.seq_len + 1)
+                    yield batch.long()
 
 
 if __name__ == "__main__":
@@ -70,6 +104,7 @@ if __name__ == "__main__":
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--activation_checkpointing", action="store_true")
 
+    parser.add_argument("--dataset", default="tinystories")
     parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seq_len", type=int, default=2048)
@@ -112,7 +147,8 @@ if __name__ == "__main__":
     optim_cls = get_optim_cls(args.optim)
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
 
-    data = get_tinystories("train").cuda()
+    ds = TokenDataset(args.dataset, "train", args.batch_size, args.seq_len)
+    dloader = iter(DataLoader(ds, batch_size=None, num_workers=1, pin_memory=True))
 
     save_dir = Path("runs/llm_pretrain") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -131,12 +167,7 @@ if __name__ == "__main__":
 
     while step < args.n_steps:
         for _ in range(args.gradient_accumulation):
-            # randomly select a continuous chunk, then reshape it
-            # notice seq_len + 1. we will slice the data inside get_loss()
-            n_toks = bsize * (args.seq_len + 1)
-            idx = torch.randint(0, data.shape[0] - n_toks, (1,)).item()
-            batch = data[idx : idx + n_toks].view(bsize, args.seq_len + 1)
-
+            batch = next(dloader).cuda()
             loss = torch.compile(get_loss)(model, batch)
             loss.backward()
 
