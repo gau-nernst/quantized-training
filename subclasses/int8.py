@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from kernels import scaled_int8_mm
+from kernels import int8_mm_dequant
 
 aten = torch.ops.aten
 
@@ -13,7 +13,8 @@ aten = torch.ops.aten
 def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int = -1):
     # absmax symmetric quantization
     scale = tensor.abs().amax(dim, keepdim=True) / 127
-    tensor = tensor.float() / scale.clip(1e-12)
+    inv_scale = 1.0 / scale.float().clip(1e-12)
+    tensor = tensor.float() * inv_scale  # slightly faster than divide directly
 
     if stochastic_rounding:
         tensor = (tensor + torch.rand_like(tensor)).floor()
@@ -152,7 +153,7 @@ class _Int8Linear(torch.autograd.Function):
 
             # optimization opportuntiy
             # we can fuse activation quantization into matmul too
-            out = scaled_int8_mm(input_int_data, weight.int_data.T, input_scale.view(-1), weight.scale.view(-1))
+            out = int8_mm_dequant(input_int_data, weight.int_data.T, input_scale, weight.scale)
             out = out.view(*batch_dims, -1)
 
         out = out + bias if bias is not None else out
