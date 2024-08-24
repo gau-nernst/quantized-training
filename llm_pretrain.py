@@ -50,6 +50,26 @@ class TokenDataset(IterableDataset):
                     yield batch.long()
 
 
+class EvalTokenDataset(TokenDataset):
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        assert worker_info is None or worker_info.num_workers == 1, "Please use num_workers<=1"
+
+        toks_per_batch = self.batch_size * (self.seq_len + 1)
+
+        # fast validation loss: calculate loss on consecutive, non-overlapping slices
+        # the more correct way is to calculate loss for each token with full seq_len context (rolling window)
+        for shard_idx in range(len(self.shards)):
+            shard_np = np.memmap(self.shards[shard_idx], dtype=np.uint16, mode="r")
+            shard = torch.from_numpy(shard_np)
+
+            n_slices = math.floor(shard.shape[0] / toks_per_batch)
+            for slice_idx in range(n_slices):
+                batch = shard[slice_idx * toks_per_batch : (slice_idx + 1) * toks_per_batch]
+                batch = batch.view(self.batch_size, self.seq_len + 1)
+                yield batch.long()
+
+
 class LRSchedule:
     def __init__(
         self, lr: float, n_steps: int, warmup: float = 0.0, decay: float = 0.0, decay_type: str = "linear"
@@ -107,6 +127,9 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
     parser.add_argument("--lr_schedule_kwargs", type=json.loads)
+
+    parser.add_argument("--val_dataset_dir")
+    parser.add_argument("--val_interval", type=int, default=5000)
 
     parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project", default="llm_pretraining")
@@ -205,6 +228,21 @@ if __name__ == "__main__":
                 step=step,
             )
             torch.save(ckpt, save_dir / "last.pth")
+
+        if args.val_interval > 0 and step % args.val_interval == 0 and args.val_dataset_dir is not None:
+            val_ds = EvalTokenDataset(args.val_dataset_dir, args.batch_size, args.seq_len)
+            val_dloader = DataLoader(val_ds, batch_size=None, num_workers=1)
+
+            total_loss = 0
+            n_batches = 0
+            model.eval()
+            with torch.no_grad():
+                for batch in tqdm(val_dloader, desc="Evaluating", dynamic_ncols=True):
+                    total_loss += torch.compile(get_loss)(model, batch.cuda()).item()
+                    n_batches += 1
+            val_loss = total_loss / n_batches
+            run.log(dict(val_loss=val_loss), step=step)
+            model.train()
 
     run.finish()
     if args.profile:
