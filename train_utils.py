@@ -1,6 +1,8 @@
 from functools import partial
 
+import bitsandbytes as bnb
 import torch
+import torchao
 from torch import nn
 
 import bnb_optim
@@ -18,7 +20,8 @@ def get_grad_norm(model: nn.Module):
 
 
 def get_optim_cls(optim):
-    return eval(optim, dict(torch=torch, optimizers=optimizers, bnb_optim=bnb_optim, partial=partial))
+    allowed = dict(torch=torch, optimizers=optimizers, bnb_optim=bnb_optim, partial=partial, bnb=bnb, torchao=torchao)
+    return eval(optim, allowed)
 
 
 def quantize_model(model: nn.Module, int8_mixed_precision: dict | None, int8_quantized_training: dict | None):

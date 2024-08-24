@@ -10,10 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import sentencepiece as spm
 import torch
 import wandb
-from huggingface_hub import hf_hub_download
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
@@ -21,60 +19,27 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from train_utils import get_grad_norm, get_optim_cls, print_model_stats, quantize_model
 
 
-def _process_tinystories(tokenizer: spm.SentencePieceProcessor, split: str, save_path: str):
-    # do everything in memory. we have enough RAM
-    filepath = hf_hub_download("roneneldan/TinyStories", f"TinyStoriesV2-GPT4-{split}.txt", repo_type="dataset")
-    stories = open(filepath).read().split("\n<|endoftext|>\n")
-
-    tokens_list = []
-    chunk_size = 10_000
-    for i in tqdm(range(0, len(stories), chunk_size), desc="Tokenizing TinyStories"):
-        chunk = stories[i : min(i + chunk_size, len(stories))]
-        tokens_list.extend(tokenizer.Encode(chunk, add_bos=True, add_eos=True, num_threads=4))
-
-    total_size = sum(len(x) for x in tokens_list)
-    mmap_tokens = np.memmap(save_path, dtype=np.uint16, mode="w+", shape=total_size)
-    i = 0
-    for tokens in tokens_list:
-        mmap_tokens[i : i + len(tokens)] = tokens
-        i += len(tokens)
-    mmap_tokens.flush()
-
-
 class TokenDataset(IterableDataset):
-    def __init__(self, dataset: str, split: str, batch_size: int, seq_len: int) -> None:
+    def __init__(self, dataset_dir: str, batch_size: int, seq_len: int) -> None:
         super().__init__()
-        self.save_dir = Path(f"{dataset}_{split}")
+        self.shards = sorted(Path(dataset_dir).glob("*.bin"))
         self.batch_size = batch_size
         self.seq_len = seq_len
-
-        marker = self.save_dir / "COMPLETE"
-        if not marker.exists():
-            tokenizer_path = hf_hub_download("meta-llama/Llama-2-7b", "tokenizer.model")
-            tokenizer = spm.SentencePieceProcessor(tokenizer_path)
-            assert tokenizer.vocab_size() < (1 << 16)  # make sure we can use uint16
-
-            self.save_dir.mkdir(exist_ok=True)
-            if dataset == "tinystories":
-                _process_tinystories(tokenizer, split, self.save_dir / "data.bin")
-            else:
-                raise ValueError(f"Unsupported {dataset=}")
-            open(marker, "w").close()  # create an empty file
+        print(f"Found {len(self.shards)} shards of data")
 
     def __iter__(self):
-        shards = sorted(self.save_dir.glob("*.bin"))
         toks_per_batch = self.batch_size * (self.seq_len + 1)
 
         while True:
             # NOTE: we don't split data across workers. just depend on workers having different
             # random seeds to select different slice of data.
-            shard_indices = torch.randperm(len(shards))
+            shard_indices = torch.randperm(len(self.shards))
             for shard_idx in shard_indices:
                 # divide a shard into n slices of toks_per_batch
                 # to make sure the slices are slightly different everytime, we add a random offset
                 # offset in np.memmap is in bytes, so need to times 2
                 offset = torch.randint(0, toks_per_batch, size=(1,)).item()
-                shard_np = np.memmap(shards[shard_idx], dtype=np.uint16, mode="r", offset=offset * 2)
+                shard_np = np.memmap(self.shards[shard_idx], dtype=np.uint16, mode="r", offset=offset * 2)
                 shard = torch.from_numpy(shard_np)
 
                 n_slices = math.floor(shard.shape[0] / toks_per_batch)
@@ -120,13 +85,14 @@ if __name__ == "__main__":
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--activation_checkpointing", action="store_true")
 
-    parser.add_argument("--dataset", default="tinystories")
+    parser.add_argument("--dataset_dir", required=True)
+    parser.add_argument("--n_workers", type=int, default=1)
     parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seq_len", type=int, default=2048)
     parser.add_argument("--gradient_accumulation", type=int, default=1)
 
-    parser.add_argument("--optim", default="optimizers.AdamW")
+    parser.add_argument("--optim", default="torch.optim.AdamW")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
@@ -166,9 +132,9 @@ if __name__ == "__main__":
     lr_schedule = CosineSchedule(args.lr, args.n_steps) if args.cosine_lr_schedule else None
 
     ds = TokenDataset(args.dataset, "train", args.batch_size, args.seq_len)
-    dloader = iter(DataLoader(ds, batch_size=None, num_workers=1, pin_memory=True))
+    dloader = iter(DataLoader(ds, batch_size=None, num_workers=args.n_workers, pin_memory=True))
 
-    save_dir = Path("runs/llm_pretrain") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dir = Path("runs/llm_pretrain") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.run_name}"
     save_dir.mkdir(parents=True, exist_ok=True)
     run = wandb.init(
         dir="/tmp", config=args, project=args.project, name=args.run_name, mode="disabled" if args.profile else None
@@ -192,7 +158,10 @@ if __name__ == "__main__":
         if lr_schedule is not None:
             lr = lr_schedule.get_lr(step)
             for param_group in optim.param_groups:
-                param_group["lr"] = lr
+                if isinstance(param_group["lr"], torch.Tensor):
+                    param_group["lr"].fill_(lr)
+                else:
+                    param_group["lr"] = lr
 
         if step % log_interval == 0:
             log_dict = dict(

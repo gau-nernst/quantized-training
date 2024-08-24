@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from llm_tinystories_pretrain import get_loss, get_tinystories
+from llm_pretrain import get_loss, get_tinystories
 from train_utils import print_model_stats, quantize_model
 
 if __name__ == "__main__":
