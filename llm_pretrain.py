@@ -50,20 +50,30 @@ class TokenDataset(IterableDataset):
                     yield batch.long()
 
 
-class CosineSchedule:
-    def __init__(self, lr: float, total_steps: int, warmup: float = 0.05) -> None:
+class LRSchedule:
+    def __init__(
+        self, lr: float, n_steps: int, warmup: float = 0.0, decay: float = 0.0, decay_type: str = "linear"
+    ) -> None:
         self.lr = lr
-        self.final_lr = 0
-        self.total_steps = total_steps
-        self.warmup_steps = int(total_steps * warmup)
+        self.t1 = int(n_steps * warmup)
+        self.t2 = int(n_steps * (1 - decay))
+        self.t3 = n_steps
+        self.decay_type = decay_type
+        assert self.t1 <= self.t2
+        assert decay_type in ("linear", "cosine")
 
     def get_lr(self, step: int) -> float:
-        if step < self.warmup_steps:
-            return self.lr * step / self.warmup_steps
-        if step < self.total_steps:
-            progress = (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
-            return self.final_lr + 0.5 * (self.lr - self.final_lr) * (1 + math.cos(progress * math.pi))
-        return self.final_lr
+        if step < self.t1:
+            return self.lr * step / self.t1
+        if step < self.t2:
+            return self.lr
+        if step < self.t3:
+            progress = (step - self.t2) / (self.t3 - self.t2)
+            if self.decay_type == "linear":
+                return self.lr * (1 - progress)
+            elif self.decay_type == "cosine":
+                return 0.5 * self.lr * (1 + math.cos(progress * math.pi))
+        return 0.0
 
 
 def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
@@ -96,7 +106,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
-    parser.add_argument("--cosine_lr_schedule", action="store_true")
+    parser.add_argument("--lr_schedule_kwargs", type=json.loads)
 
     parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project", default="llm_pretraining")
@@ -129,7 +139,9 @@ if __name__ == "__main__":
 
     optim_cls = get_optim_cls(args.optim)
     optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
-    lr_schedule = CosineSchedule(args.lr, args.n_steps) if args.cosine_lr_schedule else None
+    lr_schedule = (
+        LRSchedule(args.lr, args.n_steps, **args.lr_schedule_kwargs) if args.lr_schedule_kwargs is not None else None
+    )
 
     ds = TokenDataset(args.dataset_dir, args.batch_size, args.seq_len)
     dloader = iter(DataLoader(ds, batch_size=None, num_workers=args.n_workers, pin_memory=True))
