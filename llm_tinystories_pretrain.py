@@ -189,6 +189,11 @@ if __name__ == "__main__":
             loss = torch.compile(get_loss)(model, batch)
             loss.backward()
 
+        if lr_schedule is not None:
+            lr = lr_schedule.get_lr(step)
+            for param_group in optim.param_groups:
+                param_group["lr"] = lr
+
         if step % log_interval == 0:
             log_dict = dict(
                 loss=loss.item(),
@@ -203,11 +208,6 @@ if __name__ == "__main__":
                 time0 = time1
             run.log(log_dict, step=step)
             pbar.set_postfix(loss=log_dict["loss"])
-
-        if lr_schedule is not None:
-            lr = lr_schedule.get_lr(step)
-            for param_group in optim.param_groups:
-                param_group["lr"] = lr
 
         optim.step()
         optim.zero_grad()
