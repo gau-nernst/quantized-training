@@ -56,18 +56,19 @@ def _grid(meta):
 # also re-tune when stride changes i.e. transpose configuration
 @triton.autotune(configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk"])
 @triton.jit
-def _int8_mm_kernel(
+def _matmul_kernel(
     # fmt: off
     A_ptr, B_ptr, C_ptr,
     M, N, K,
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
+    ACC_DTYPE: tl.constexpr,
+    EVEN_K: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr = 8,
-    EVEN_K: tl.constexpr = True,
     # fmt: on
 ):
     # based on triton.ops.matmul
@@ -90,7 +91,7 @@ def _int8_mm_kernel(
     A = A_ptr + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
     B = B_ptr + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn)
 
-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.int32)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
     for k in range(K, 0, -BLOCK_K):
         if EVEN_K:
             a = tl.load(A)
@@ -132,8 +133,9 @@ def _int8_mm(A: Tensor, B: Tensor):
     assert A.shape[1] == B.shape[0]
     M, K = A.shape
     _, N = B.shape
+    EVEN_K = K % 2 == 0
     C = torch.empty(M, N, dtype=torch.int32, device=A.device)
-    _int8_mm_kernel[_grid](A, B, C, M, N, K, *A.stride(), *B.stride(), *C.stride(), EVEN_K=K % 2 == 0)
+    _matmul_kernel[_grid](A, B, C, M, N, K, *A.stride(), *B.stride(), *C.stride(), tl.int32, EVEN_K)
     return C
 
 
