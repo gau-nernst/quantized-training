@@ -53,21 +53,29 @@ python llm_pretrain.py --dataset_dir tinystories_train --seed 2024
 
 ## Speed benchmarks
 
-### INT8 matmul
+### Matmul
 
-4070Ti SUPER. Speedup over PyTorch BF16 matmul.
+4070Ti SUPER. Speedup over PyTorch BF16 matmul. See [`benchmark_mm.py`](benchmark_mm.py) (might need better configs for FP16)
 
 Kernel       | `A @ B`  | `A @ B.T` | `A.T @ B`
 -------------|----------|-----------|----------
 `M = N = K = 1024`
-PyTorch INT8 | 1.03     | 1.82      | 1.11
-Triton INT8  | 1.63     | 2.50      | 1.56
+PyTorch INT8 | 1.03     | 1.93      | 1.02
+Triton INT8  | 1.70     | 2.60      | 1.56
+Triton FP8   | 1.70     | 2.17      | 1.44
+Triton FP16* | 1.69     | 1.70      | 1.63
 `M = N = K = 2048`
-PyTorch INT8 | 0.99     | 1.96      | 0.93
-Triton INT8  | 2.11     | 2.87      | 1.44
+PyTorch INT8 | 0.99     | 1.99      | 0.98
+Triton INT8  | 2.08     | 2.91      | 1.51
+Triton FP8   | 1.71     | 1.94      | 1.31
+Triton FP16* | 1.87     | 1.80      | 1.86
 `M = N = K = 4096`
-PyTorch INT8 | 0.91     | 3.16      | 0.92
-Triton INT8  | 2.21     | 3.23      | 1.53
+PyTorch INT8 | 0.89     | 3.58      | 0.96
+Triton INT8  | 2.17     | 3.12      | 1.52
+Triton FP8   | 1.70     | 1.99      | 1.30
+Triton FP16* | 1.31     | 1.27      | 1.34
+
+*: FP16 matmul with **FP16 accumulate** (NOT FP32 accumulate).
 
 ### INT8 mixed precision training
 
