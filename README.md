@@ -41,6 +41,8 @@ python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_laye
 
 Prepare data: either download from [gaunernst/tokenized-datasets](https://huggingface.co/datasets/gaunernst/tokenized-datasets) or run
 
+TODO: use steam-based C4 instead, like torchtitan
+
 ```
 python tokenize_data.py --dataset tinystories --split train
 ```

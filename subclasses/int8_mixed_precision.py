@@ -2,6 +2,7 @@ from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
+import torch.utils._pytree as pytree
 from torch import Tensor, nn
 
 from kernels import int8_mm_dequant
@@ -12,9 +13,9 @@ aten = torch.ops.aten
 
 
 class Int8MixedPrecisionConfig(NamedTuple):
-    forward: bool = False
-    backward_grad_input: bool = False
-    backward_grad_weight: bool = False
+    output: bool = True
+    grad_input: bool = True
+    grad_weight: bool = True
     stochastic_rounding: bool = False
 
 
@@ -42,7 +43,7 @@ class Int8MixedPrecisionLinearWeight(Tensor):
         return cls(tensor_data_dict["_data"], *tensor_attributes)
 
     def __repr__(self):
-        return self._data.__repr__()
+        return f"{self.__class__.__name__}(data={self._data}, config={self.config})"
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
@@ -54,28 +55,65 @@ class Int8MixedPrecisionLinearWeight(Tensor):
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
 
+    # adapated from FP8 implementation of WeightWithDynamicFloat8CastTensor
     @classmethod
     def __torch_dispatch__(cls, func, types, args, kwargs):
-        if func in (aten.detach.default, aten.clone.default, aten._to_copy.default):
-            return cls(func(args[0]._data, *args[1:], **kwargs), args[0].config)
+        config = None
 
-        args = [x._data if isinstance(x, cls) else x for x in args]
-        return func(*args, **kwargs)
+        def unwrap(x: cls):
+            nonlocal config
+            if config is None:
+                config = x.config
+            else:
+                assert x.config == config
+            return x._data
+
+        out = func(
+            *pytree.tree_map_only(cls, unwrap, args),
+            **pytree.tree_map_only(cls, unwrap, kwargs),
+        )
+
+        if func is aten.copy_.default:
+            # return original object
+            return args[0]
+        elif func in {
+            aten.t.default,
+            aten.detach.default,
+            aten.empty_like.default,
+            aten.new_zeros.default,
+            aten.slice.Tensor,
+            aten.view.default,
+            aten.as_strided.default,
+            aten._to_copy.default,
+            aten._pin_memory.default,
+            aten.split.Tensor,
+            aten.clone.default,
+        }:
+            # return new wrapped object
+            return pytree.tree_map_only(Tensor, lambda x: cls(x, config), out)
+        else:
+            # return new unwrapped object
+            return out
+
+
+def _dynamic_int8_mm(A: Tensor, B: Tensor, sr: bool) -> Tensor:
+    A_i8, A_scale_rowwise = quantize_int8(A, sr, dim=1)
+    B_t_i8, B_scale_colwise = quantize_int8(B.T, sr, dim=1)
+    return int8_mm_dequant(
+        A_i8.contiguous(),
+        B_t_i8.contiguous().T,
+        A_scale_rowwise.contiguous(),
+        B_scale_colwise.contiguous(),
+    )
 
 
 class _Int8MixedPrecisionLinear(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input: Tensor, weight: Int8MixedPrecisionLinearWeight, bias: Tensor | None = None):
-        ctx.save_for_backward(input, weight)
-        ctx.bias = bias is not None
-        sr = weight.config.stochastic_rounding
-
-        if weight.config.forward:
+    def forward(input: Tensor, weight: Int8MixedPrecisionLinearWeight, bias: Tensor | None = None):
+        if weight.config.output:
             batch_dims = input.shape[:-1]
             input = input.view(-1, weight.shape[1])
-            input_i8, input_scale = quantize_int8(input, sr, dim=1)
-            weight_i8, weight_scale = quantize_int8(weight, sr, dim=1)
-            out = int8_mm_dequant(input_i8, weight_i8.T, input_scale, weight_scale)
+            out = _dynamic_int8_mm(input, weight._data.T, weight.config.stochastic_rounding)
             out = out.view(*batch_dims, weight.shape[0])
         else:
             out = input @ weight.T
@@ -84,31 +122,32 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         return out
 
     @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, weight, bias = inputs
+        ctx.config = weight.config
+        ctx.save_for_backward(input, weight._data)
+        ctx.bias = bias is not None
+
+    @staticmethod
     def backward(ctx, grad_output):
         input, weight = ctx.saved_tensors
         grad_input = grad_weight = grad_bias = None
-
-        weight: Int8MixedPrecisionLinearWeight
-        sr = weight.config.stochastic_rounding
 
         batch_dims = grad_output.shape[:-1]
         grad_output = grad_output.view(-1, weight.shape[0])
         input = input.view(-1, weight.shape[1])
 
         if ctx.needs_input_grad[0]:
-            if weight.config.backward_grad_input:
-                grad_output_i8, grad_output_scale = quantize_int8(grad_output, sr, dim=1)
-                weight_i8_t, weight_scale = quantize_int8(weight.T, sr, dim=1)
-                grad_input = int8_mm_dequant(grad_output_i8, weight_i8_t.T, grad_output_scale, weight_scale)
+            if ctx.config.grad_input:
+                grad_input = _dynamic_int8_mm(grad_output, weight, ctx.config.stochastic_rounding)
             else:
                 grad_input = grad_output @ weight
             grad_input = grad_input.view(*batch_dims, weight.shape[1])
 
         if ctx.needs_input_grad[1]:
-            if weight.config.backward_grad_weight:
-                grad_output_i8_t, grad_output_scale = quantize_int8(grad_output.T, sr, dim=1)
-                input_i8_t, input_scale = quantize_int8(input.T, sr, dim=1)
-                grad_weight = int8_mm_dequant(grad_output_i8_t, input_i8_t.T, grad_output_scale, input_scale)
+            if ctx.config.grad_weight:
+                # this is slightly faster
+                grad_weight = _dynamic_int8_mm(input.T, grad_output, ctx.config.stochastic_rounding).T
             else:
                 grad_weight = grad_output.T @ input
 

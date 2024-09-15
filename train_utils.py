@@ -2,11 +2,9 @@ from functools import partial
 
 import bitsandbytes as bnb
 import torch
-import torchao
+import torchao.prototype.low_bit_optim as low_bit_optim
 from torch import nn
 
-import bnb_optim
-import optimizers
 from subclasses import (
     Int8MixedPrecisionConfig,
     Int8QTConfig,
@@ -20,7 +18,7 @@ def get_grad_norm(model: nn.Module):
 
 
 def get_optim_cls(optim):
-    allowed = dict(torch=torch, optimizers=optimizers, bnb_optim=bnb_optim, partial=partial, bnb=bnb, torchao=torchao)
+    allowed = dict(torch=torch, low_bit_optim=low_bit_optim, bnb=bnb, partial=partial)
     return eval(optim, allowed)
 
 
