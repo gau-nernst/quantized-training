@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from tqdm import tqdm
 
-from train_utils import get_grad_norm, get_optim_cls, print_model_stats, quantize_model
+from train_utils import get_grad_norm, get_optimizer, print_model_stats, quantize_model
 
 
 class CosineSchedule:
@@ -139,8 +139,7 @@ if __name__ == "__main__":
     quantize_model(model, args.int8_mixed_precision, args.int8_quantized_training)
     print_model_stats(model)
 
-    optim_cls = get_optim_cls(args.optim)
-    optim = optim_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, **args.optim_kwargs)
+    optim = get_optimizer(args.optim, model, args.lr, args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, len(dloader) * args.n_epochs)
 
     save_dir = Path("runs/timm_finetune") / f"{args.run_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

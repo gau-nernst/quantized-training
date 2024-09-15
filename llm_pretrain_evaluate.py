@@ -8,6 +8,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from llm_pretrain import get_loss, get_tinystories
 from train_utils import print_model_stats, quantize_model
 
+# TODO: need update
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # default config is 470M
