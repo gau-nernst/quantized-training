@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import wandb
+from torch import Tensor
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
@@ -25,11 +26,21 @@ class TokenDataset(IterableDataset):
         self.shards = sorted(Path(dataset_dir).glob("*.bin"))
         self.batch_size = batch_size
         self.seq_len = seq_len
+        self.toks_per_batch = self.batch_size * (self.seq_len + 1)
         print(f"Found {len(self.shards)} shards of data")
 
-    def __iter__(self):
-        toks_per_batch = self.batch_size * (self.seq_len + 1)
+    def _iter_shard(self, shard: Tensor, shuffle: bool):
+        n_slices = math.floor(shard.shape[0] / self.toks_per_batch)
+        slice_indices = torch.randperm(n_slices) if shuffle else range(n_slices)
 
+        for slice_idx in slice_indices:
+            batch = shard[slice_idx * self.toks_per_batch : (slice_idx + 1) * self.toks_per_batch]
+            batch = batch.view(self.batch_size, self.seq_len + 1)
+            tokens = batch[:, :-1].long()
+            labels = batch[:, 1:].long()
+            yield tokens, labels
+
+    def __iter__(self):
         while True:
             # NOTE: we don't split data across workers. just depend on workers having different
             # random seeds to select different slice of data.
@@ -38,16 +49,12 @@ class TokenDataset(IterableDataset):
                 # divide a shard into n slices of toks_per_batch
                 # to make sure the slices are slightly different everytime, we add a random offset
                 # offset in np.memmap is in bytes, so need to times 2
-                offset = torch.randint(0, toks_per_batch, size=(1,)).item()
+                offset = torch.randint(0, self.toks_per_batch, size=(1,)).item()
                 shard_np = np.memmap(self.shards[shard_idx], dtype=np.uint16, mode="r", offset=offset * 2)
                 shard = torch.from_numpy(shard_np)
 
-                n_slices = math.floor(shard.shape[0] / toks_per_batch)
-                slice_indices = torch.randperm(n_slices)
-                for slice_idx in slice_indices:
-                    batch = shard[slice_idx * toks_per_batch : (slice_idx + 1) * toks_per_batch]
-                    batch = batch.view(self.batch_size, self.seq_len + 1)
-                    yield batch.long()
+                for data in self._iter_shard(shard, shuffle=True):
+                    yield data
 
 
 class EvalTokenDataset(TokenDataset):
@@ -55,19 +62,14 @@ class EvalTokenDataset(TokenDataset):
         worker_info = torch.utils.data.get_worker_info()
         assert worker_info is None or worker_info.num_workers == 1, "Please use num_workers<=1"
 
-        toks_per_batch = self.batch_size * (self.seq_len + 1)
-
         # fast validation loss: calculate loss on consecutive, non-overlapping slices
         # the more correct way is to calculate loss for each token with full seq_len context (rolling window)
         for shard_idx in range(len(self.shards)):
             shard_np = np.memmap(self.shards[shard_idx], dtype=np.uint16, mode="r")
             shard = torch.from_numpy(shard_np)
 
-            n_slices = math.floor(shard.shape[0] / toks_per_batch)
-            for slice_idx in range(n_slices):
-                batch = shard[slice_idx * toks_per_batch : (slice_idx + 1) * toks_per_batch]
-                batch = batch.view(self.batch_size, self.seq_len + 1)
-                yield batch.long()
+            for data in self._iter_shard(shard, shuffle=False):
+                yield data
 
 
 class LRSchedule:
@@ -96,10 +98,9 @@ class LRSchedule:
         return 0.0
 
 
-def get_loss(model: LlamaForCausalLM, batch: torch.Tensor):
-    logits = model(batch[:, :-1].long()).logits.flatten(0, 1)
-    labels = batch[:, 1:].long().flatten()
-    return torch.nn.functional.cross_entropy(logits, labels)
+def get_loss(model: LlamaForCausalLM, tokens: Tensor, labels: Tensor):
+    logits = model(tokens).logits.flatten(0, 1)
+    return torch.nn.functional.cross_entropy(logits, labels.view(-1))
 
 
 if __name__ == "__main__":
@@ -143,6 +144,7 @@ if __name__ == "__main__":
         torch.manual_seed(args.seed)
     if args.profile:
         args.n_steps = 5
+    args.torch_version = torch.__version__
 
     config = LlamaConfig(
         hidden_size=args.d_model,
@@ -172,7 +174,11 @@ if __name__ == "__main__":
     save_dir = Path("runs/llm_pretrain") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.run_name}"
     save_dir.mkdir(parents=True, exist_ok=True)
     run = wandb.init(
-        dir="/tmp", config=args, project=args.project, name=args.run_name, mode="disabled" if args.profile else None
+        dir="/tmp",
+        config=args,
+        project=args.project,
+        name=args.run_name,
+        mode="disabled" if args.profile else None,
     )
 
     step = 0
@@ -186,8 +192,8 @@ if __name__ == "__main__":
 
     while step < args.n_steps:
         for _ in range(args.gradient_accumulation):
-            batch = next(dloader).cuda()
-            loss = torch.compile(get_loss)(model, batch)
+            tokens, labels = next(dloader)
+            loss = torch.compile(get_loss)(model, tokens.cuda(), labels.cuda())
             loss.backward()
 
         if lr_schedule is not None:
@@ -237,8 +243,8 @@ if __name__ == "__main__":
             n_batches = 0
             model.eval()
             with torch.no_grad():
-                for batch in tqdm(val_dloader, desc="Evaluating", dynamic_ncols=True):
-                    total_loss += torch.compile(get_loss)(model, batch.cuda()).item()
+                for tokens, labels in tqdm(val_dloader, desc="Evaluating", dynamic_ncols=True):
+                    total_loss += torch.compile(get_loss)(model, tokens.cuda(), labels.cuda()).item()
                     n_batches += 1
             val_loss = total_loss / n_batches
             run.log(dict(val_loss=val_loss), step=step)
