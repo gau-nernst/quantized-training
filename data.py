@@ -103,12 +103,13 @@ class HFImageDataset(IterableDataset):
                 ds = self.ds
             else:
                 seed = torch.empty(1, dtype=torch.int64).random_().item()
-                ds = self.ds.shuffle(seed, buffer_size=10_000)
+                ds = self.ds.shuffle(seed)  # large buffer size will slow down
 
             # TODO: support other keys
             # TODO: add batching here to support things like CutMix/MixUp?
             for sample in ds.select_columns(["jpg", "cls"]):
-                img = sample["jpg"]
+                # some images are RGBA, which will throw off torchvision
+                img = sample["jpg"].convert("RGB")
                 if self.transform is not None:
                     img = self.transform(img)
 
