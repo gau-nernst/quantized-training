@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from streaming_datasets import get_dataset
+from data import get_dataset
 from train_utils import LRSchedule, get_grad_norm, get_optimizer, print_model_stats, quantize_model
 
 
@@ -33,8 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--activation_checkpointing", action="store_true")
 
-    parser.add_argument("--train_ds", required=True)
-    parser.add_argument("--train_ds_kwargs", type=json.loads, default=dict())
+    parser.add_argument("--train_ds", type=json.loads, required=True)
     parser.add_argument("--n_workers", type=int, default=1)
     parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=4)
@@ -47,8 +46,7 @@ if __name__ == "__main__":
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
     parser.add_argument("--lr_schedule_kwargs", type=json.loads)
 
-    parser.add_argument("--val_ds", required=True)
-    parser.add_argument("--val_ds_kwargs", type=json.loads, default=dict())
+    parser.add_argument("--val_ds", type=json.loads)
     parser.add_argument("--val_interval", type=int, default=1000)
 
     parser.add_argument("--ckpt_interval", type=int, default=1000)
@@ -84,12 +82,7 @@ if __name__ == "__main__":
     else:
         lr_schedule = None
 
-    ds = get_dataset(
-        args.train_ds,
-        seq_len=args.seq_len,
-        eval=False,
-        **args.train_ds_kwargs,
-    )
+    ds = get_dataset(seq_len=args.seq_len, eval=False, **args.train_ds)
     bsize = args.batch_size // args.gradient_accumulation
     dloader = iter(DataLoader(ds, batch_size=bsize, num_workers=args.n_workers, pin_memory=True))
 
@@ -157,12 +150,7 @@ if __name__ == "__main__":
             torch.save(ckpt, args.save_dir / "last.pth")
 
         if args.val_interval > 0 and step % args.val_interval == 0 and args.val_ds is not None:
-            val_ds = get_dataset(
-                args.val_ds,
-                seq_len=args.seq_len,
-                eval=True,
-                **args.val_ds_kwargs,
-            )
+            val_ds = get_dataset(seq_len=args.seq_len, eval=True, **args.val_ds)
             val_dloader = DataLoader(val_ds, batch_size=bsize, num_workers=1)
 
             total_loss = 0

@@ -1,5 +1,3 @@
-# https://github.com/pytorch/torchtitan/blob/main/torchtitan/datasets/hf_datasets.py
-
 import math
 from pathlib import Path
 
@@ -12,8 +10,8 @@ from torch.utils.data import IterableDataset
 from llama_tokenizers import get_tokenizer
 
 
-def get_dataset(name: str, seq_len: int, eval: bool, **kwargs):
-    ds_cls = dict(token=TokenDataset, c4=C4Dataset)[name]
+def get_dataset(type: str, seq_len: int, eval: bool, **kwargs):
+    ds_cls = dict(token=TokenDataset, hf=HFDataset)[type]
     return ds_cls(seq_len=seq_len, eval=eval, **kwargs)
 
 
@@ -55,9 +53,13 @@ class TokenDataset(IterableDataset):
                 break
 
 
-class C4Dataset(IterableDataset):
-    def __init__(self, subset: str, split: str, tokenizer: str, seq_len: int, eval: bool) -> None:
-        self.ds = load_dataset("allenai/c4", name=subset, split=split, streaming=True)
+# https://github.com/pytorch/torchtitan/blob/main/torchtitan/datasets/hf_datasets.py
+# must have "text" column e.g.
+# - allenai/c4
+# - HuggingFaceFW/fineweb-edu
+class HFDataset(IterableDataset):
+    def __init__(self, dataset: str, subset: str, split: str, tokenizer: str, seq_len: int, eval: bool) -> None:
+        self.ds = load_dataset(dataset, name=subset, split=split, streaming=True)
         self.tokenizer = get_tokenizer(tokenizer)
         self.seq_len = seq_len
         self.eval = eval
@@ -69,8 +71,7 @@ class C4Dataset(IterableDataset):
             if self.eval:
                 ds = self.ds
             else:
-                i64_info = torch.iinfo(torch.int64)
-                seed = torch.empty(1, dtype=torch.int64).random_(i64_info.min, i64_info.max).item()
+                seed = torch.empty(1, dtype=torch.int64).random_().item()
                 ds = self.ds.shuffle(seed, buffer_size=10_000)
 
             for sample in ds:
