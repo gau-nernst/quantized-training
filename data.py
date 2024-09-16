@@ -10,9 +10,13 @@ from torch.utils.data import IterableDataset
 from llama_tokenizers import get_tokenizer
 
 
-def get_dataset(type: str, seq_len: int, eval: bool, **kwargs):
-    ds_cls = dict(token=TokenDataset, hf=HFDataset)[type]
-    return ds_cls(seq_len=seq_len, eval=eval, **kwargs)
+def get_dataset(type: str, eval: bool, **kwargs):
+    ds_cls = dict(
+        token=TokenDataset,
+        hf_text=HFTextDataset,
+        hf_image=HFImageDataset,
+    )[type]
+    return ds_cls(eval=eval, **kwargs)
 
 
 # datasets produced by tokenize_data.py
@@ -57,7 +61,7 @@ class TokenDataset(IterableDataset):
 # must have "text" column e.g.
 # - allenai/c4
 # - HuggingFaceFW/fineweb-edu
-class HFDataset(IterableDataset):
+class HFTextDataset(IterableDataset):
     def __init__(self, dataset: str, subset: str, split: str, tokenizer: str, seq_len: int, eval: bool) -> None:
         self.ds = load_dataset(dataset, name=subset, split=split, streaming=True)
         self.tokenizer = get_tokenizer(tokenizer)
@@ -74,7 +78,7 @@ class HFDataset(IterableDataset):
                 seed = torch.empty(1, dtype=torch.int64).random_().item()
                 ds = self.ds.shuffle(seed, buffer_size=10_000)
 
-            for sample in ds:
+            for sample in ds.select_columns("text"):
                 buffer.extend(self.tokenizer(sample["text"]))
                 while len(buffer) >= self.seq_len + 1:
                     tokens = torch.tensor(buffer[: self.seq_len + 1], dtype=torch.int64)
@@ -85,4 +89,30 @@ class HFDataset(IterableDataset):
                 break
 
 
-# TODO: timm/imagenet-1k-wds
+# must have "jpg" and "cls" keys, typically webdataset format e.g.
+# - timm/imagenet-1k-wds
+class HFImageDataset(IterableDataset):
+    def __init__(self, dataset: str, split: str, eval: bool, transform=None) -> None:
+        self.ds = load_dataset(dataset, split=split, streaming=True)
+        self.eval = eval
+        self.transform = transform
+
+    def __iter__(self):
+        while True:
+            if self.eval:
+                ds = self.ds
+            else:
+                seed = torch.empty(1, dtype=torch.int64).random_().item()
+                ds = self.ds.shuffle(seed, buffer_size=10_000)
+
+            # TODO: support other keys
+            # TODO: add batching here to support things like CutMix/MixUp?
+            for sample in ds.select_columns(["jpg", "cls"]):
+                img = sample["jpg"]
+                if self.transform is not None:
+                    img = self.transform(img)
+
+                yield img, sample["cls"]
+
+            if self.eval:
+                break
