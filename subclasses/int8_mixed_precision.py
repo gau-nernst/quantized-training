@@ -97,13 +97,13 @@ class Int8MixedPrecisionLinearWeight(Tensor):
 
 
 def _dynamic_int8_mm(A: Tensor, B: Tensor, sr: bool) -> Tensor:
-    A_i8, A_scale_rowwise = quantize_int8(A, sr, dim=1)
-    B_t_i8, B_scale_colwise = quantize_int8(B.T, sr, dim=1)
+    A_i8, row_scale = quantize_int8(A, sr, dim=1)
+    B_t_i8, col_scale = quantize_int8(B.T, sr, dim=1)
     return int8_mm_dequant(
         A_i8.contiguous(),
         B_t_i8.contiguous().T,
-        A_scale_rowwise.contiguous(),
-        B_scale_colwise.contiguous(),
+        row_scale.contiguous(),
+        col_scale.contiguous(),
     )
 
 
