@@ -99,7 +99,7 @@ def _matmul_kernel(
         else:
             a = tl.load(A, mask=rk[None, :] < k, other=0.0)
             b = tl.load(B, mask=rk[:, None] < k, other=0.0)
-        acc += tl.dot(a, b)
+        acc += tl.dot(a, b, out_dtype=ACC_DTYPE)
         A += BLOCK_K * stride_ak
         B += BLOCK_K * stride_bk
 
@@ -136,6 +136,17 @@ def _int8_mm(A: Tensor, B: Tensor):
     EVEN_K = K % 2 == 0
     C = torch.empty(M, N, dtype=torch.int32, device=A.device)
     _matmul_kernel[_grid](A, B, C, M, N, K, *A.stride(), *B.stride(), *C.stride(), tl.int32, EVEN_K)
+    return C
+
+
+def _triton_mm(A: Tensor, B: Tensor, out_dtype: torch.dtype, acc_dtype: torch.dtype):
+    ACC_DTYPE_TRITON = {torch.float32: tl.float32, torch.float16: tl.float16, torch.int32: tl.int32}[acc_dtype]
+    assert A.shape[1] == B.shape[0]
+    M, K = A.shape
+    _, N = B.shape
+    EVEN_K = K % 2 == 0
+    C = torch.empty(M, N, dtype=out_dtype, device=A.device)
+    _matmul_kernel[_grid](A, B, C, M, N, K, *A.stride(), *B.stride(), *C.stride(), ACC_DTYPE_TRITON, EVEN_K)
     return C
 
 
