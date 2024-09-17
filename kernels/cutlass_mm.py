@@ -16,6 +16,6 @@ _cutlass_mm = torch.utils.cpp_extension.load(
 
 
 def _int4_mm(A: Tensor, B: Tensor) -> Tensor:
-    assert A.is_cuda and A.is_contiguous()
-    assert B.is_cuda and B.T.is_contiguous()
+    assert A.is_cuda and A.ndim == 2 and A.dtype is torch.int32 and A.is_contiguous()
+    assert B.is_cuda and B.ndim == 2 and B.dtype is torch.int32 and B.T.is_contiguous()
     return _cutlass_mm.int4_mm(A, B)
