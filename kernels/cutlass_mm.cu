@@ -13,47 +13,31 @@
   }
 
 
-void cutlass_int4_mm(
-  int32_t const *A,
-  int32_t const *B,
-  int32_t *C,
-  int M,
-  int N,
-  int K
-) {
-  using Gemm = cutlass::gemm::device::Gemm<
-    cutlass::int4b_t, cutlass::layout::RowMajor,    // A matrix
-    cutlass::int4b_t, cutlass::layout::ColumnMajor, // B matrix
-    int32_t,          cutlass::layout::RowMajor,    // C matrix
-    int32_t,                                        // accumulate dtype
-    cutlass::arch::OpClassTensorOp,
-    cutlass::arch::Sm80
-  >;
-  using GemmCoord = cutlass::gemm::GemmCoord;
-  Gemm gemm_op;
-  cutlass::Status status = gemm_op({
-    {M, N, K},
-    {reinterpret_cast<cutlass::int4b_t const *>(A), K},
-    {reinterpret_cast<cutlass::int4b_t const *>(B), K},
-    {C, N},
-    {C, N},
-    {1, 0} // epilogue
-  });
-  CUTLASS_CHECK(status);
-}
-
 // we will do input checks in python
 torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
   int M = A.size(0);
   int K = A.size(1) * 8;  // 8x 4-bit in 32-bit
   int N = B.size(1);
   torch::Tensor C = torch::empty({M, N}, A.options());
-  cutlass_int4_mm(
-    A.data_ptr<int32_t>(),
-    B.data_ptr<int32_t>(),
-    C.data_ptr<int32_t>(),
-    M, N, K
-  );
+
+  cutlass::gemm::device::Gemm<
+    cutlass::int4b_t, cutlass::layout::RowMajor,    // A matrix
+    cutlass::int4b_t, cutlass::layout::ColumnMajor, // B matrix
+    int32_t,          cutlass::layout::RowMajor,    // C matrix
+    int32_t,                                        // accumulate dtype
+    cutlass::arch::OpClassTensorOp,
+    cutlass::arch::Sm80
+  > gemm_op;
+  cutlass::Status status = gemm_op({
+    {M, N, K},
+    {reinterpret_cast<cutlass::int4b_t const *>(A.data_ptr<int32_t>()), K},
+    {reinterpret_cast<cutlass::int4b_t const *>(B.data_ptr<int32_t>()), K},
+    {C.data_ptr<int32_t>(), N},
+    {C.data_ptr<int32_t>(), N},
+    {1, 0} // epilogue
+  });
+  CUTLASS_CHECK(status);
+
   return C;
 }
 
