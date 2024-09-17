@@ -102,6 +102,7 @@ if __name__ == "__main__":
     model.train()
     time0 = time.time()
     if args.profile:
+        torch._inductor.config.triton.unique_kernel_names = True
         prof = torch.profiler.profile()
 
     while step < args.n_steps:
