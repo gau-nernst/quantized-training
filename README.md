@@ -64,16 +64,19 @@ Kernel       | `A @ B`  | `A @ B.T` | `A.T @ B`
 `M = N = K = 1024`
 PyTorch INT8 | 1.03     | 1.93      | 1.02
 Triton INT8  | 1.70     | 2.60      | 1.56
+Cutlass INT4 | -        | 2.50      | -
 Triton FP8   | 1.70     | 2.17      | 1.44
 Triton FP16* | 1.69     | 1.70      | 1.63
 `M = N = K = 2048`
 PyTorch INT8 | 0.99     | 1.99      | 0.98
 Triton INT8  | 2.08     | 2.91      | 1.51
+Cutlass INT4 | -        | 3.92      | -
 Triton FP8   | 1.71     | 1.94      | 1.31
 Triton FP16* | 1.87     | 1.80      | 1.86
 `M = N = K = 4096`
 PyTorch INT8 | 0.89     | 3.58      | 0.96
 Triton INT8  | 2.17     | 3.12      | 1.52
+Cutlass INT4 | -        | 5.89      | -
 Triton FP8   | 1.70     | 1.99      | 1.30
 Triton FP16* | 1.31     | 1.27      | 1.34
 

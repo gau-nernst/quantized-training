@@ -2,11 +2,17 @@ import pandas as pd
 import torch
 from triton.testing import do_bench
 
-from kernels import _int8_mm, _triton_mm
+from kernels import _int4_mm, _int8_mm, _triton_mm
 
 
 def bench_f(f, *args):
     return do_bench(lambda: f(*args), fast_flush=False, return_mode="median")
+
+
+def unpack_int4(x: torch.Tensor) -> torch.Tensor:
+    assert x.dtype == torch.int8
+    # NOTE: do this way to handle sign-extension correctly
+    return torch.stack([x >> 4, x << 4 >> 4], dim=1).view(x.shape[0], -1)
 
 
 data = []
@@ -25,11 +31,21 @@ for sz in sizes:
         B_i8 = torch.randint(-128, 127, size=(sz, sz), dtype=torch.int8).cuda().transpose(0, tb)
         A_f8 = torch.randn(sz, sz).to(torch.float8_e4m3fn).cuda().transpose(0, ta)
         B_f8 = torch.randn(sz, sz).to(torch.float8_e4m3fn).cuda().transpose(0, tb)
+        A_i4 = torch.randint(0, 255, size=(sz, sz // 2), dtype=torch.uint8).cuda().view(torch.int32).transpose(0, ta)
+        B_i4 = torch.randint(0, 255, size=(sz, sz // 2), dtype=torch.uint8).cuda().view(torch.int32).transpose(0, tb)
 
         bf16_time = bench_f(torch.mm, A_bf16, B_bf16)
         i8_time = bench_f(torch._int_mm, A_i8, B_i8)
         i8_triton_time = bench_f(_int8_mm, A_i8, B_i8)
         torch.testing.assert_close(torch._int_mm(A_i8, B_i8), _int8_mm(A_i8, B_i8))
+
+        if ta == 0 and tb == 1:
+            i4_time = bench_f(_int4_mm, A_i4, B_i4)
+            actual = _int4_mm(A_i4, B_i4)
+            expected = torch._int_mm(unpack_int4(A_i4.view(torch.int8)), unpack_int4(B_i4.T.view(torch.int8)).T)
+            torch.testing.assert_close(actual, expected)
+        else:
+            i4_time = float("inf")
 
         # TODO: add torch._scaled_mm()
         f8_triton_time = bench_f(_triton_mm, A_f8, B_f8, torch.bfloat16, torch.float32)
@@ -41,12 +57,14 @@ for sz in sizes:
                 layout_str,
                 bf16_time / i8_time,
                 bf16_time / i8_triton_time,
+                bf16_time / i4_time,
                 bf16_time / f8_triton_time,
                 bf16_time / f16_acc_f16_triton_time,
             ]
         )
 
 df = pd.DataFrame(
-    data, columns=["Size", "Layout", "PyTorch INT8", "Triton INT8", "Triton FP8", "Triton FP16 w/ FP16 accumulate"]
+    data,
+    columns=["Size", "Layout", "PyTorch INT8", "Triton INT8", "INT4", "Triton FP8", "Triton FP16 w/ FP16 accumulate"],
 )
 print(df.T)
