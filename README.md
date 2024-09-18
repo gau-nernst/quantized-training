@@ -57,30 +57,37 @@ python llm_pretrain.py --dataset_dir tinystories_train --seed 2024
 
 ### Matmul
 
-4070Ti SUPER. Speedup over PyTorch BF16 matmul. See [`benchmark_mm.py`](benchmark_mm.py) (might need better configs for FP16)
+4070Ti SUPER. Speedup over PyTorch BF16 matmul. See [`benchmark_mm.py`](benchmark_mm.py) (might need better configs for FP16. Use default Cutlass INT4 GEMM)
 
-Kernel       | `A @ B`  | `A @ B.T` | `A.T @ B`
--------------|----------|-----------|----------
-`M = N = K = 1024`
-PyTorch INT8 | 1.03     | 1.93      | 1.02
-Triton INT8  | 1.70     | 2.60      | 1.56
-Cutlass INT4 | -        | 2.50      | -
-Triton FP8   | 1.70     | 2.17      | 1.44
-Triton FP16* | 1.69     | 1.70      | 1.63
-`M = N = K = 2048`
-PyTorch INT8 | 0.99     | 1.99      | 0.98
-Triton INT8  | 2.08     | 2.91      | 1.51
-Cutlass INT4 | -        | 3.92      | -
-Triton FP8   | 1.71     | 1.94      | 1.31
-Triton FP16* | 1.87     | 1.80      | 1.86
-`M = N = K = 4096`
-PyTorch INT8 | 0.89     | 3.58      | 0.96
-Triton INT8  | 2.17     | 3.12      | 1.52
-Cutlass INT4 | -        | 5.89      | -
-Triton FP8   | 1.70     | 1.99      | 1.30
-Triton FP16* | 1.31     | 1.27      | 1.34
+TODO: add A100 results
 
-*: FP16 matmul with **FP16 accumulate** (NOT FP32 accumulate).
+Row-major x Column-major (`A @ B.T`)
+
+|                                |   1024 |   2048 |   4096 |
+|:-------------------------------|-------:|-------:|-------:|
+| CuBLAS INT8                    |   1.95 |   2.01 |   2.90 |
+| Triton INT8                    |   2.72 |   2.87 |   3.14 |
+| Cutlass INT4                   |   2.56 |   3.81 |   5.89 |
+| Triton FP8                     |   1.78 |   1.65 |   1.64 |
+| Triton FP16 w/ FP16 accumulate |   1.86 |   1.76 |   1.29 |
+
+Row-major x Row-major (`A @ B`)
+
+|                                |   1024 |   2048 |   4096 |
+|:-------------------------------|-------:|-------:|-------:|
+| CuBLAS INT8                    |   1.03 |   0.94 |   0.92 |
+| Triton INT8                    |   1.62 |   1.98 |   2.18 |
+| Triton FP8                     |   1.70 |   1.63 |   1.71 |
+| Triton FP16 w/ FP16 accumulate |   1.64 |   1.77 |   1.38 |
+
+Column-major x Row-major (`A.T @ B`)
+
+|                                |   1024 |   2048 |   4096 |
+|:-------------------------------|-------:|-------:|-------:|
+| CuBLAS INT8                    |   0.87 |   0.93 |   0.88 |
+| Triton INT8                    |   1.31 |   1.43 |   1.54 |
+| Triton FP8                     |   1.48 |   1.61 |   1.70 |
+| Triton FP16 w/ FP16 accumulate |   1.42 |   1.79 |   1.35 |
 
 ### INT8 mixed precision training
 
