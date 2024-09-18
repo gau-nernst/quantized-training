@@ -3,9 +3,7 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-lib = torch.library.Library("qtrain", "DEF")
-lib_ops = torch.ops.qtrain
-
+from ._lib import lib, lib_ops
 
 # https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html
 # (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps)
@@ -119,6 +117,8 @@ lib.define("int8_mm(Tensor A, Tensor B) -> Tensor")
 
 
 def int8_mm(A: Tensor, B: Tensor) -> Tensor:
+    assert A.dtype is torch.int8 and B.dtype is torch.int8
+    assert A.shape[1] == B.shape[0]
     return lib_ops.int8_mm(A, B)
 
 
@@ -128,15 +128,8 @@ def _(a: Tensor, b: Tensor):
 
 
 @torch.library.impl(lib, "int8_mm", "CUDA")
-def _int8_mm(A: Tensor, B: Tensor):
-    assert A.dtype is torch.int8 and B.dtype is torch.int8
-    assert A.shape[1] == B.shape[0]
-    M, K = A.shape
-    _, N = B.shape
-    EVEN_K = K % 2 == 0
-    C = torch.empty(M, N, dtype=torch.int32, device=A.device)
-    _matmul_kernel[_grid](A, B, C, M, N, K, *A.stride(), *B.stride(), *C.stride(), tl.int32, EVEN_K)
-    return C
+def _(A: Tensor, B: Tensor):
+    return _triton_mm(A, B, torch.int32, torch.int32)
 
 
 def _triton_mm(A: Tensor, B: Tensor, out_dtype: torch.dtype, acc_dtype: torch.dtype):
@@ -220,6 +213,10 @@ lib.define("int8_mm_dequant(Tensor A, Tensor B, Tensor row_scale, Tensor col_sca
 
 
 def int8_mm_dequant(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
+    assert A.dtype is torch.int8 and B.dtype is torch.int8
+    assert A.shape[1] == B.shape[0]
+    assert row_scale.squeeze().shape == (A.shape[0],)
+    assert col_scale.squeeze().shape == (B.shape[1],)
     return lib_ops.int8_mm_dequant(A, B, row_scale, col_scale)
 
 
@@ -229,13 +226,9 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
 
 
 @torch.library.impl(lib, "int8_mm_dequant", "CUDA")
-def _int8_mm_dequant(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
-    assert A.dtype is torch.int8 and B.dtype is torch.int8
-    assert A.shape[1] == B.shape[0]
+def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
     M, K = A.shape
     _, N = B.shape
-    assert row_scale.squeeze().shape == (M,)
-    assert col_scale.squeeze().shape == (N,)
     C = torch.empty(M, N, device=A.device, dtype=row_scale.dtype)
     _int8_mm_dequant_kernel[_grid](
         A, B, C, row_scale, col_scale, M, N, K, *A.stride(), *B.stride(), *C.stride(), EVEN_K=K % 2 == 0
