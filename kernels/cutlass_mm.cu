@@ -157,7 +157,6 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
   DeviceGemm gemm_op;
 
   size_t workspace_size = DeviceGemm::get_workspace_size(args);
-  std::cout << "Workspace size: " << workspace_size << std::endl;
   torch::Tensor workspace = torch::empty(workspace_size, A.options().dtype(torch::kUInt8));
 
   CUTLASS_CHECK(gemm_op.can_implement(args));
