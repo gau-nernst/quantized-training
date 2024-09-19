@@ -1,44 +1,174 @@
+#include "cutlass/cutlass.h"
+#include "cutlass/gemm/device/gemm_universal.h"
 #include "cutlass/gemm/device/gemm.h"
+#include "cutlass/epilogue/threadblock/fusion/visitors.hpp"
+#include "cutlass/gemm/kernel/default_gemm_universal_with_visitor.h"
+#include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
 
 
-#define CUTLASS_CHECK(status)                                                                    \
-  {                                                                                              \
-    cutlass::Status error = status;                                                              \
-    if (error != cutlass::Status::kSuccess) {                                                    \
-      std::cerr << "Got cutlass error: " << cutlassGetStatusString(error) << " at: " << __LINE__ \
-                << std::endl;                                                                    \
-      exit(EXIT_FAILURE);                                                                        \
-    }                                                                                            \
-  }
+#define CUTLASS_CHECK(status) \
+  TORCH_CHECK(status == cutlass::Status::kSuccess, "cutlass error: ", cutlassGetStatusString(status))
 
 
-// we will do input checks in python
+// define common params
+using ElementA           = cutlass::int4b_t;
+using ElementB           = cutlass::int4b_t;
+using ElementAccumulator = int32_t;
+using OpClass            = cutlass::arch::OpClassTensorOp;
+using ArchTag            = cutlass::arch::Sm80;
+
+// how many elements to load at a time -> load 128-bit = 32 x 4-bit
+constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
+constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
+
+
+// we will do input checks in python. A and B are stored as int8
 torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
   int M = A.size(0);
-  int K = A.size(1) * 8;  // 8x 4-bit in 32-bit
+  int K = A.size(1) * 2;
   int N = B.size(1);
-  torch::Tensor C = torch::empty({M, N}, A.options());
+  torch::Tensor C = torch::empty({M, N}, A.options().dtype(torch::kInt32));
 
+  // some configs for int4 mma
+  // https://github.com/NVIDIA/cutlass/blob/v3.5.1/test/unit/gemm/device/gemm_s4t_s4n_s32t_tensor_op_s32_sm80.cu
+  // currently using default config
+  using ElementC = int32_t;
   cutlass::gemm::device::Gemm<
-    cutlass::int4b_t, cutlass::layout::RowMajor,    // A matrix
-    cutlass::int4b_t, cutlass::layout::ColumnMajor, // B matrix
-    int32_t,          cutlass::layout::RowMajor,    // C matrix
-    int32_t,                                        // accumulate dtype
-    cutlass::arch::OpClassTensorOp,
-    cutlass::arch::Sm80
+    ElementA, cutlass::layout::RowMajor,    // A matrix
+    ElementB, cutlass::layout::ColumnMajor, // B matrix
+    ElementC, cutlass::layout::RowMajor,    // C matrix
+    ElementAccumulator, OpClass, ArchTag
   > gemm_op;
   cutlass::Status status = gemm_op({
     {M, N, K},
-    {reinterpret_cast<cutlass::int4b_t const *>(A.data_ptr<int32_t>()), K},
-    {reinterpret_cast<cutlass::int4b_t const *>(B.data_ptr<int32_t>()), K},
-    {C.data_ptr<int32_t>(), N},
-    {C.data_ptr<int32_t>(), N},
-    {1, 0} // epilogue
+    {reinterpret_cast<ElementA *>(A.data_ptr<int8_t>()), K},
+    {reinterpret_cast<ElementB *>(B.data_ptr<int8_t>()), K},
+    {C.data_ptr<ElementC>(), N},
+    {C.data_ptr<ElementC>(), N},
+    {1, 0}  // epilogue
   });
   CUTLASS_CHECK(status);
 
   return C;
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("int4_mm", &int4_mm); }
+// we will do input checks in python. A and B are stored as int8
+// this function was based on the following cutlass example
+// https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/ampere_gemm_universal_streamk_broadcast.cu
+// also with the help of emitted code from cutlass Python  
+torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
+  int M = A.size(0);
+  int K = A.size(1) * 2;
+  int N = B.size(1);
+  torch::Tensor C = torch::empty({M, N}, row_scale.options());
+
+  using ElementC        = cutlass::bfloat16_t;
+  using ElementEpilogue = float;
+
+  constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;  // 8
+
+  // some configs for int4 mma
+  // https://github.com/NVIDIA/cutlass/blob/v3.5.1/test/unit/gemm/device/gemm_s4t_s4n_s32t_tensor_op_s32_sm80.cu
+  using ThreadblockShape = cutlass::gemm::GemmShape<256, 128, 128>;
+  using WarpShape        = cutlass::gemm::GemmShape<64, 64, 128>;
+  using InstructionShape = cutlass::gemm::GemmShape<16, 8, 64>;
+
+  constexpr int numStages = 4;
+  constexpr int numEpilogueStages = 1;
+
+  // build epilogue visitor tree
+  using OutputTileThreadMap = cutlass::epilogue::threadblock::OutputTileThreadLayout<
+    ThreadblockShape, WarpShape, ElementC, AlignmentC, numEpilogueStages
+  >;
+
+  using Accum = cutlass::epilogue::threadblock::VisitorAccFetch;
+  constexpr auto RoundMode = cutlass::FloatRoundStyle::round_to_nearest;
+  using Multiply = cutlass::epilogue::threadblock::VisitorCompute<
+    cutlass::multiplies, ElementEpilogue, ElementEpilogue, RoundMode
+  >;
+
+  // (1, N)
+  using ColScale = cutlass::epilogue::threadblock::VisitorRowBroadcast<
+    OutputTileThreadMap, ElementC,
+    cute::Stride<cute::_0, cute::_1, int32_t>  // MNL
+  >;
+  using EVTCompute0 = cutlass::epilogue::threadblock::Sm80EVT<Multiply, Accum, ColScale>;
+
+  // (M, 1)
+  using RowScale = cutlass::epilogue::threadblock::VisitorColBroadcast<
+    OutputTileThreadMap, ElementC,
+    cute::Stride<cute::_1, cute::_0, int32_t>  // MNL
+  >;
+  using EVTCompute1 = cutlass::epilogue::threadblock::Sm80EVT<Multiply, EVTCompute0, RowScale>;
+
+  using Output = cutlass::epilogue::threadblock::VisitorAuxStore<
+    OutputTileThreadMap, ElementC, RoundMode,
+    cute::Stride<int64_t, cute::_1, int64_t>  // MNL
+  >;
+  using EVTOutput = cutlass::epilogue::threadblock::Sm80EVT<Output, EVTCompute1>;
+
+  using EVTKernel = typename cutlass::gemm::kernel::DefaultGemmWithVisitor<
+    ElementA, cutlass::layout::RowMajor,    cutlass::ComplexTransform::kNone, AlignmentA,
+    ElementB, cutlass::layout::ColumnMajor, cutlass::ComplexTransform::kNone, AlignmentB,
+    ElementC, cutlass::layout::RowMajor,                                      AlignmentC,
+    ElementAccumulator, ElementEpilogue, OpClass, ArchTag,
+    ThreadblockShape, WarpShape, InstructionShape,
+    EVTOutput,
+    // GemmIdentityThreadblockSwizzle does not work for some strange reasons, though it should be simpler than split-k
+    // see https://github.com/NVIDIA/cutlass/issues/1459
+    // cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
+    cutlass::gemm::threadblock::ThreadblockSwizzleStreamK,
+    numStages,
+    cutlass::arch::OpMultiplyAddSaturate,  // OpMultiplyAdd does not work
+    numEpilogueStages
+  >::GemmKernel;
+  using DeviceGemm = cutlass::gemm::device::GemmUniversalAdapter<EVTKernel>;
+
+  const ElementA *A_ptr         = reinterpret_cast<ElementA *>(A.data_ptr<int8_t>());
+  const ElementB *B_ptr         = reinterpret_cast<ElementB *>(B.data_ptr<int8_t>());
+  const ElementC *col_scale_ptr = reinterpret_cast<ElementC *>(col_scale.data_ptr<torch::BFloat16>());
+  const ElementC *row_scale_ptr = reinterpret_cast<ElementC *>(row_scale.data_ptr<torch::BFloat16>());
+  ElementC *C_ptr               = reinterpret_cast<ElementC *>(C.data_ptr<torch::BFloat16>());
+
+  typename EVTOutput::Arguments callback_args{
+    {
+      {
+        {},                                                                  // Accum
+        {col_scale_ptr, ElementC(0), {cute::_0{}, cute::_1{}, int32_t(N)}},  // ColScale
+        {}                                                                   // Multiply
+      },                                                                     // EVTCompute0
+      {row_scale_ptr, ElementC(0), {cute::_1{}, cute::_0{}, int32_t(M)}},    // RowScale
+      {}                                                                     // Multiply
+    },                                                                       // EVTCompute1
+    {C_ptr, {int64_t{N}, cute::_1{}, int64_t{M*N}}}                          // D
+  };
+
+  typename DeviceGemm::Arguments args(
+    cutlass::gemm::GemmUniversalMode::kGemm,
+    cutlass::gemm::GemmCoord{M, N, K},
+    1,                              // batch_split
+    callback_args,
+    A_ptr, B_ptr, nullptr, nullptr, // unsued C_ptr and D_ptr
+    M * K, N * K, 0, 0,             // batch_stride A, B, C, D
+    K, K, 0, 0                      // stride A, B, C, D
+  );
+  DeviceGemm gemm_op;
+
+  size_t workspace_size = DeviceGemm::get_workspace_size(args);
+  std::cout << "Workspace size: " << workspace_size << std::endl;
+  torch::Tensor workspace = torch::empty(workspace_size, A.options().dtype(torch::kUInt8));
+
+  CUTLASS_CHECK(gemm_op.can_implement(args));
+  CUTLASS_CHECK(gemm_op.initialize(args, workspace.data_ptr<uint8_t>()));
+  CUTLASS_CHECK(gemm_op());
+
+  return C;
+}
+
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("int4_mm", &int4_mm);
+  m.def("int4_mm_dequant", &int4_mm_dequant);
+}

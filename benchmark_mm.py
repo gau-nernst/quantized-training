@@ -7,8 +7,8 @@ from triton.testing import do_bench
 from kernels import _triton_mm, int4_mm, int8_mm
 
 
-def bench_f(f, *args):
-    return do_bench(lambda: f(*args), fast_flush=False, return_mode="median")
+def bench_f(f, *args, **kwargs):
+    return do_bench(lambda: f(*args, **kwargs), fast_flush=False, return_mode="median")
 
 
 def pack_int4(x: torch.Tensor) -> torch.Tensor:
@@ -59,8 +59,8 @@ if __name__ == "__main__":
         if not args.a_column_major and args.b_column_major:
             A_i8_ref = torch.randint(-8, 7, size=(sz, sz), dtype=torch.int8)
             B_i8_ref = torch.randint(-8, 7, size=(sz, sz), dtype=torch.int8)
-            A_i4 = pack_int4(A_i8_ref).view(torch.int32)
-            B_i4 = pack_int4(B_i8_ref.T).contiguous().view(torch.int32).T
+            A_i4 = pack_int4(A_i8_ref)
+            B_i4 = pack_int4(B_i8_ref.T).contiguous().T
             i4_cutlass_time = bench_f(int4_mm, A_i4, B_i4)
 
             actual = int4_mm(A_i4, B_i4)
