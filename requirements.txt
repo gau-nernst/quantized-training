@@ -3,3 +3,4 @@ timm
 datasets
 wandb
 lm-eval
+torchao

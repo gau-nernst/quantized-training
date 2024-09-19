@@ -11,16 +11,18 @@ Eventually, some of these will be upstreamed to [torchao](https://github.com/pyt
 
 ## Environment setup
 
-Install PyTorch following the [official instructions](https://pytorch.org/). Recommended to use nightly version.
+```bash
+# Include submodules to clone cutlass
+git clone --recurse-submodules https://github.com/gau-nernst/quantized-training
 
-```
+# Install PyTorch from https://pytorch.org/. Recommended to use nightly version.
 conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch-nightly -c nvidia
-```
 
-Install other deps
-
-```
+# Install other deps. Might not be updated.
 pip install -r requirements.txt
+
+# Apply cutlass patch to fix compile error with scaled int4 matmul.
+git apply kernels/cutlass.patch --directory kernels/cutlass
 ```
 
 ## Training
@@ -41,7 +43,7 @@ python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_laye
 
 Prepare data: either download from [gaunernst/tokenized-datasets](https://huggingface.co/datasets/gaunernst/tokenized-datasets) or run
 
-TODO: use steam-based C4 instead, like torchtitan
+TODO: update command
 
 ```
 python tokenize_data.py --dataset tinystories --split train
