@@ -33,29 +33,34 @@ torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
 
   // some configs for int4 mma
   // https://github.com/NVIDIA/cutlass/blob/v3.5.1/test/unit/gemm/device/gemm_s4t_s4n_s32t_tensor_op_s32_sm80.cu
-  // currently using default config
+  // using default config
+  // using ThreadblockShape = cutlass::gemm::GemmShape<128, 256, 128>;
+  // using WarpShape        = GemmShape<64, 64, 128>;
+  // using InstructionShape = GemmShape<16, 8, 64>;
+  // static int const kStages = 3;
   using ElementC = int32_t;
-  cutlass::gemm::device::Gemm<
+  using Gemm = cutlass::gemm::device::Gemm<
     ElementA, cutlass::layout::RowMajor,    // A matrix
     ElementB, cutlass::layout::ColumnMajor, // B matrix
     ElementC, cutlass::layout::RowMajor,    // C matrix
     ElementAccumulator, OpClass, ArchTag
-  > gemm_op;
-  cutlass::Status status = gemm_op({
+  >;
+  Gemm::Arguments args {
     {M, N, K},
     {reinterpret_cast<ElementA *>(A.data_ptr<int8_t>()), K},
     {reinterpret_cast<ElementB *>(B.data_ptr<int8_t>()), K},
     {C.data_ptr<ElementC>(), N},
     {C.data_ptr<ElementC>(), N},
     {1, 0}  // epilogue
-  });
-  CUTLASS_CHECK(status);
+  };
+  Gemm gemm_op;
+  CUTLASS_CHECK(gemm_op(args));
 
   return C;
 }
 
 // we will do input checks in python. A and B are stored as int8
-// this function was based on the following cutlass example
+// this function is based on the following cutlass example
 // https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/ampere_gemm_universal_streamk_broadcast.cu
 // also with the help of emitted code from cutlass Python  
 torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
@@ -71,11 +76,11 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
 
   // some configs for int4 mma
   // https://github.com/NVIDIA/cutlass/blob/v3.5.1/test/unit/gemm/device/gemm_s4t_s4n_s32t_tensor_op_s32_sm80.cu
-  using ThreadblockShape = cutlass::gemm::GemmShape<256, 128, 128>;
+  using ThreadblockShape = cutlass::gemm::GemmShape<128, 256, 128>;
   using WarpShape        = cutlass::gemm::GemmShape<64, 64, 128>;
   using InstructionShape = cutlass::gemm::GemmShape<16, 8, 64>;
 
-  constexpr int numStages = 4;
+  constexpr int numStages = 3;
   constexpr int numEpilogueStages = 1;
 
   // build epilogue visitor tree
@@ -142,7 +147,7 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
       {row_scale_ptr, ElementC(0), {cute::_1{}, cute::_0{}, int32_t(M)}},    // RowScale
       {}                                                                     // Multiply
     },                                                                       // EVTCompute1
-    {C_ptr, {int64_t{N}, cute::_1{}, int64_t{M*N}}}                          // D
+    {C_ptr, {int64_t{N}, cute::_1{}, int64_t{M*N}}}                          // EVTOutput
   };
 
   typename DeviceGemm::Arguments args(
@@ -158,10 +163,10 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
 
   size_t workspace_size = DeviceGemm::get_workspace_size(args);
   torch::Tensor workspace = torch::empty(workspace_size, A.options().dtype(torch::kUInt8));
+  auto stream = at::cuda::getCurrentCUDAStream();
 
   CUTLASS_CHECK(gemm_op.can_implement(args));
-  CUTLASS_CHECK(gemm_op.initialize(args, workspace.data_ptr<uint8_t>()));
-  CUTLASS_CHECK(gemm_op());
+  CUTLASS_CHECK(gemm_op(args, workspace.data_ptr<uint8_t>(), stream));
 
   return C;
 }
