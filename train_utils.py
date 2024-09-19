@@ -6,12 +6,7 @@ import torch
 import torchao.prototype.low_bit_optim as low_bit_optim
 from torch import Tensor, nn
 
-from subclasses import (
-    Int8MixedPrecisionConfig,
-    Int8QTConfig,
-    convert_int8_mixed_precision,
-    convert_int8_quantized_training,
-)
+from subclasses import Int8QTConfig, MixedPrecisionConfig, convert_int8_quantized_training, convert_mixed_precision
 
 
 def get_grad_norm(model: nn.Module):
@@ -24,17 +19,19 @@ def get_optimizer(optim: str, model: nn.Module, lr: float, weight_decay: float, 
     return optim_cls(model.parameters(), lr=lr, weight_decay=weight_decay, **kwargs)
 
 
-def quantize_model(model: nn.Module, int8_mixed_precision: dict | None, int8_quantized_training: dict | None):
-    if int8_mixed_precision is not None:
-        assert int8_quantized_training is None
-        config = Int8MixedPrecisionConfig(**int8_mixed_precision)
-        print(f"INT8 mixed precision with {config=}")
-        convert_int8_mixed_precision(model, config=config)
+def quantize_model(model: nn.Module, quantize: str | None, **kwargs):
+    if quantize == "mixed_precision":
+        config = MixedPrecisionConfig(**kwargs)
+        print(f"Mixed precision with {config=}")
+        convert_mixed_precision(model, config=config)
 
-    elif int8_quantized_training is not None:
-        config = Int8QTConfig(**int8_quantized_training)
+    elif quantize == "int8_quantized_training":
+        config = Int8QTConfig(**kwargs)
         print(f"INT8 quantized training with {config=}")
         convert_int8_quantized_training(model, config=config)
+
+    else:
+        assert quantize is None
 
 
 def print_model_stats(model: nn.Module):

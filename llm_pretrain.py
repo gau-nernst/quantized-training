@@ -28,8 +28,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_id", default="mini_llamas/Llama-2-470m")
 
-    parser.add_argument("--int8_mixed_precision", type=json.loads)
-    parser.add_argument("--int8_quantized_training", type=json.loads)
+    parser.add_argument("--quantize")
+    parser.add_argument("--quantize_kwargs", type=json.loads, default=dict())
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--activation_checkpointing", action="store_true")
 
@@ -71,9 +71,9 @@ if __name__ == "__main__":
     model = LlamaForCausalLM(config).bfloat16().cuda()
     if args.activation_checkpointing:
         model.gradient_checkpointing_enable()
-    quantize_model(model.model, args.int8_mixed_precision, args.int8_quantized_training)
+    quantize_model(model.model, args.quantize, **args.quantize_kwargs)
     if args.quantize_lm_head:
-        quantize_model(model.lm_head, args.int8_mixed_precision, args.int8_quantized_training)
+        quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)
     print_model_stats(model)
 
     optim = get_optimizer(args.optim, model, args.lr, args.weight_decay, **args.optim_kwargs)

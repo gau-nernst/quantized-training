@@ -42,8 +42,8 @@ def get_parser():
     parser.add_argument("--model", required=True)
     parser.add_argument("--model_kwargs", type=json.loads, default=dict())
 
-    parser.add_argument("--int8_mixed_precision", type=json.loads)
-    parser.add_argument("--int8_quantized_training", type=json.loads)
+    parser.add_argument("--quantize")
+    parser.add_argument("--quantize_kwargs", type=json.loads, default=dict())
     parser.add_argument("--compile", action="store_true")
 
     parser.add_argument("--n_epochs", type=int, default=10)
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     model = timm.create_model(args.model, pretrained=True, num_classes=45, **args.model_kwargs)
     model.bfloat16().cuda()
     model.set_grad_checkpointing()
-    quantize_model(model, args.int8_mixed_precision, args.int8_quantized_training)
+    quantize_model(model, args.quantize, **args.quantize_kwargs)  # TODO: skip output layer?
     print_model_stats(model)
 
     optim = get_optimizer(args.optim, model, args.lr, args.weight_decay, **args.optim_kwargs)

@@ -5,24 +5,25 @@ import torch.nn.functional as F
 import torch.utils._pytree as pytree
 from torch import Tensor, nn
 
-from kernels import int8_mm_dequant
+from kernels import int4_mm_dequant, int8_mm_dequant
 
 from .int8 import quantize_int8
 
 aten = torch.ops.aten
 
 
-class Int8MixedPrecisionConfig(NamedTuple):
+class MixedPrecisionConfig(NamedTuple):
     output: bool = True
     grad_input: bool = True
     grad_weight: bool = True
+    dtype: str = "int8"
     stochastic_rounding: bool = False
 
 
-class Int8MixedPrecisionLinearWeight(Tensor):
+class MixedPrecisionLinearWeight(Tensor):
     @staticmethod
     @torch._dynamo.disable
-    def __new__(cls, data: Tensor, config: Int8MixedPrecisionConfig):
+    def __new__(cls, data: Tensor, config: MixedPrecisionConfig):
         return Tensor._make_wrapper_subclass(
             cls,
             data.shape,
@@ -31,7 +32,7 @@ class Int8MixedPrecisionLinearWeight(Tensor):
         )
 
     @torch._dynamo.disable
-    def __init__(self, data: Tensor, config: Int8MixedPrecisionConfig):
+    def __init__(self, data: Tensor, config: MixedPrecisionConfig):
         self._data = data
         self.config = config
 
@@ -107,13 +108,48 @@ def _dynamic_int8_mm(A: Tensor, B: Tensor, sr: bool) -> Tensor:
     )
 
 
+def quantize_int4_rowwise_absmax(x: Tensor) -> Tensor:
+    # scale = x.abs().amax(dim=1) / 7
+
+    # slightly slower, but should be more accurate (does it matter?)
+    pos_scale = x.relu().amax(dim=1) / 7
+    neg_scale = x.neg().relu().amax(dim=1) / 8
+    scale = torch.maximum(pos_scale, neg_scale)
+
+    inv_scale = 1.0 / scale.float().clip(1e-12)
+    x = x.float() * inv_scale.view(-1, 1)
+    x = x.round().to(torch.int8)
+    x = (x[:, ::2] << 4) | (x[:, 1::2] & 0xF)
+    return x, scale
+
+
+def _dynamic_int4_mm(A: Tensor, B: Tensor) -> Tensor:
+    A_i4, row_scale = quantize_int4_rowwise_absmax(A)
+    B_t_i4, col_scale = quantize_int4_rowwise_absmax(B.T)
+    return int4_mm_dequant(
+        A_i4.contiguous(),
+        B_t_i4.contiguous().T,
+        row_scale.contiguous(),
+        col_scale.contiguous(),
+    )
+
+
+def _dynamic_mm(A, B, sr, dtype):
+    if dtype == "int8":
+        return _dynamic_int8_mm(A, B, sr)
+    elif dtype == "int4":
+        return _dynamic_int4_mm(A, B)
+    else:
+        raise ValueError
+
+
 class _Int8MixedPrecisionLinear(torch.autograd.Function):
     @staticmethod
-    def forward(input: Tensor, weight: Int8MixedPrecisionLinearWeight, bias: Tensor | None = None):
+    def forward(input: Tensor, weight: MixedPrecisionLinearWeight, bias: Tensor | None = None):
         if weight.config.output:
             batch_dims = input.shape[:-1]
             input = input.view(-1, weight.shape[1])
-            out = _dynamic_int8_mm(input, weight._data.T, weight.config.stochastic_rounding)
+            out = _dynamic_mm(input, weight._data.T, weight.config.stochastic_rounding, weight.config.dtype)
             out = out.view(*batch_dims, weight.shape[0])
         else:
             out = input @ weight.T
@@ -139,7 +175,7 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
 
         if ctx.needs_input_grad[0]:
             if ctx.config.grad_input:
-                grad_input = _dynamic_int8_mm(grad_output, weight, ctx.config.stochastic_rounding)
+                grad_input = _dynamic_mm(grad_output, weight, ctx.config.stochastic_rounding, ctx.config.dtype)
             else:
                 grad_input = grad_output @ weight
             grad_input = grad_input.view(*batch_dims, weight.shape[1])
@@ -147,7 +183,7 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         if ctx.needs_input_grad[1]:
             if ctx.config.grad_weight:
                 # this is slightly faster
-                grad_weight = _dynamic_int8_mm(input.T, grad_output, ctx.config.stochastic_rounding).T
+                grad_weight = _dynamic_mm(input.T, grad_output, ctx.config.stochastic_rounding, ctx.config.dtype).T
             else:
                 grad_weight = grad_output.T @ input
 
@@ -157,13 +193,13 @@ class _Int8MixedPrecisionLinear(torch.autograd.Function):
         return grad_input, grad_weight, grad_bias
 
 
-def convert_int8_mixed_precision(module: nn.Module, *, config: Int8MixedPrecisionConfig = Int8MixedPrecisionConfig()):
+def convert_mixed_precision(module: nn.Module, *, config: MixedPrecisionConfig = MixedPrecisionConfig()):
     if isinstance(module, nn.Linear):
         module.weight = nn.Parameter(
-            Int8MixedPrecisionLinearWeight(module.weight.detach(), config=config),
+            MixedPrecisionLinearWeight(module.weight.detach(), config=config),
             requires_grad=module.weight.requires_grad,
         )
     else:
         for m in module.children():
-            convert_int8_mixed_precision(m, config=config)
+            convert_mixed_precision(m, config=config)
     return module
