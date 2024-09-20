@@ -114,6 +114,8 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
   >;
   using EVTOutput = cutlass::epilogue::threadblock::Sm80EVT<Output, EVTCompute1>;
 
+  // to make this work with GemmIdentityThreadblockSwizzle, requires the patch from
+  // https://github.com/NVIDIA/cutlass/pull/1753
   using EVTKernel = typename cutlass::gemm::kernel::DefaultGemmWithVisitor<
     ElementA, cutlass::layout::RowMajor,    cutlass::ComplexTransform::kNone, AlignmentA,
     ElementB, cutlass::layout::ColumnMajor, cutlass::ComplexTransform::kNone, AlignmentB,
@@ -121,10 +123,7 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
     ElementAccumulator, ElementEpilogue, OpClass, ArchTag,
     ThreadblockShape, WarpShape, InstructionShape,
     EVTOutput,
-    // GemmIdentityThreadblockSwizzle does not work for some strange reasons, though it should be simpler than split-k
-    // see https://github.com/NVIDIA/cutlass/issues/1459
-    // cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
-    cutlass::gemm::threadblock::ThreadblockSwizzleStreamK,
+    cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
     numStages,
     cutlass::arch::OpMultiplyAddSaturate,  // OpMultiplyAdd does not work
     numEpilogueStages
@@ -159,14 +158,11 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
     M * K, N * K, 0, 0,             // batch_stride A, B, C, D
     K, K, 0, 0                      // stride A, B, C, D
   );
+
   DeviceGemm gemm_op;
-
-  size_t workspace_size = DeviceGemm::get_workspace_size(args);
-  torch::Tensor workspace = torch::empty(workspace_size, A.options().dtype(torch::kUInt8));
   auto stream = at::cuda::getCurrentCUDAStream();
-
   CUTLASS_CHECK(gemm_op.can_implement(args));
-  CUTLASS_CHECK(gemm_op(args, workspace.data_ptr<uint8_t>(), stream));
+  CUTLASS_CHECK(gemm_op(args, nullptr, stream));
 
   return C;
 }

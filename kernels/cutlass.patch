@@ -19,3 +19,16 @@ index 1692cc30..e0d4aba4 100644
  
     static_assert((ElementsPerAccess == 16 || ElementsPerAccess == 8 || ElementsPerAccess == 4),
                  "ElementsPerAccess needs to be 16 or 8.");
+diff --git a/include/cutlass/gemm/kernel/gemm_universal_with_visitor.h b/include/cutlass/gemm/kernel/gemm_universal_with_visitor.h
+index 0d9fbc3f..f75d8f85 100644
+--- a/include/cutlass/gemm/kernel/gemm_universal_with_visitor.h
++++ b/include/cutlass/gemm/kernel/gemm_universal_with_visitor.h
+@@ -52,7 +52,7 @@ template <
+   typename Epilogue,             ///! Epilogue
+   typename ThreadblockSwizzle_   ///! Threadblock swizzling function
+ >
+-class GemmWithEpilogueVisitor: GemmUniversal<Mma,Epilogue, ThreadblockSwizzle_> {
++class GemmWithEpilogueVisitor: public GemmUniversal<Mma,Epilogue, ThreadblockSwizzle_> {
+ public:
+ 
+   using ThreadblockSwizzle = ThreadblockSwizzle_;
