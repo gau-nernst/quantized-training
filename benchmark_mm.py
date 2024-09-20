@@ -72,6 +72,8 @@ if __name__ == "__main__":
         if torch.cuda.get_device_capability() >= (8, 9):
             # TODO: add torch._scaled_mm()
             f8_triton_time = bench_f(_triton_mm, A_f8, B_f8, torch.bfloat16, torch.float32)
+        else:
+            f8_triton_time = float("inf")
         f16_acc_f16_triton_time = bench_f(_triton_mm, A_f16, B_f16, torch.float16, torch.float16)
 
         data.append(
