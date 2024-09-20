@@ -61,17 +61,16 @@ python llm_pretrain.py --dataset_dir tinystories_train --seed 2024
 
 4070Ti SUPER. Speedup over PyTorch BF16 matmul. See [`benchmark_mm.py`](benchmark_mm.py) (might need better configs for FP16. Use default Cutlass INT4 GEMM)
 
-TODO: add A100 results
-
 Row-major x Column-major (`A @ B.T`)
 
-|                                |   1024 |   2048 |   4096 |
-|:-------------------------------|-------:|-------:|-------:|
-| CuBLAS INT8                    |   1.95 |   2.01 |   2.90 |
-| Triton INT8                    |   2.72 |   2.87 |   3.14 |
-| Cutlass INT4                   |   2.56 |   3.81 |   5.89 |
+|                                |   1024 |   2048 |   4096 |   1024 |   2048 |   4096 |
+|:-------------------------------|-------:|-------:|-------:|-------:|-------:|-------:|
+|                                 <td colspan=3>4070Ti SUPER <td colspan=3>A100        |
+| CuBLAS INT8                    |   1.95 |   2.01 |   2.90 |   1.28 |   1.87 |   1.53 |
+| Triton INT8                    |   2.72 |   2.87 |   3.14 |   1.21 |   1.96 |   1.72 |
+| Cutlass INT4                   |   2.56 |   3.81 |   5.89 |   1.15 |   2.33 |   2.96 |
 | Triton FP8                     |   1.78 |   1.65 |   1.64 |
-| Triton FP16 w/ FP16 accumulate |   1.86 |   1.76 |   1.29 |
+| Triton FP16 w/ FP16 accumulate |   1.86 |   1.76 |   1.29 |   0.92 |   1.26 |   0.98 |
 
 Row-major x Row-major (`A @ B`)
 
