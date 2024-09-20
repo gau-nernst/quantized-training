@@ -5,8 +5,15 @@ import bitsandbytes as bnb
 import torch
 import torchao.prototype.low_bit_optim as low_bit_optim
 from torch import Tensor, nn
+from transformers import LlamaForCausalLM
 
-from subclasses import Int8QTConfig, MixedPrecisionConfig, convert_int8_quantized_training, convert_mixed_precision
+from subclasses import (
+    Int8QTConfig,
+    MixedPrecisionConfig,
+    convert_bitnet,
+    convert_int8_quantized_training,
+    convert_mixed_precision,
+)
 
 
 def get_grad_norm(model: nn.Module):
@@ -29,6 +36,18 @@ def quantize_model(model: nn.Module, quantize: str | None, **kwargs):
         config = Int8QTConfig(**kwargs)
         print(f"INT8 quantized training with {config=}")
         convert_int8_quantized_training(model, config=config)
+
+    elif quantize == "bitnet":
+        # only for LlamaForCausalLM
+        def remove_rmsnorm(module: nn.Module):
+            for name, child in module.named_children():
+                if name in ("input_layernorm", "post_attention_layernorm"):
+                    setattr(module, name, nn.Identity())
+                else:
+                    remove_rmsnorm(child)
+
+        remove_rmsnorm(model)
+        convert_bitnet(model, **kwargs)
 
     else:
         assert quantize is None

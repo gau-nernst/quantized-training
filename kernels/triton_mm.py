@@ -159,6 +159,7 @@ def _int8_mm_dequant_kernel(
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr = 8,
     EVEN_K: tl.constexpr = True,
+    TENSOR_SCALE: tl.constexpr = False,
     # fmt: on
 ):
     # based on triton.ops.matmul
@@ -201,7 +202,10 @@ def _int8_mm_dequant_kernel(
     mask = (idx_m < M) & (idx_n < N)
 
     row_scale = tl.load(row_scale_ptr + idx_m, mask=idx_m < M).to(tl.float32)
-    col_scale = tl.load(col_scale_ptr + idx_n, mask=idx_n < N).to(tl.float32)
+    if TENSOR_SCALE:
+        col_scale = tl.load(col_scale_ptr).to(tl.float32)  # scalar
+    else:
+        col_scale = tl.load(col_scale_ptr + idx_n, mask=idx_n < N).to(tl.float32)
     acc = acc.to(tl.float32) * row_scale * col_scale
 
     # inductor generates a suffix
@@ -216,7 +220,7 @@ def int8_mm_dequant(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) 
     assert A.dtype is torch.int8 and B.dtype is torch.int8
     assert A.shape[1] == B.shape[0]
     assert row_scale.squeeze().shape == (A.shape[0],)
-    assert col_scale.squeeze().shape == (B.shape[1],)
+    assert col_scale.squeeze().shape in ((B.shape[1],), ())
     return lib_ops.int8_mm_dequant(A, B, row_scale, col_scale)
 
 
@@ -231,6 +235,18 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
     _, N = B.shape
     C = torch.empty(M, N, device=A.device, dtype=row_scale.dtype)
     _int8_mm_dequant_kernel[_grid](
-        A, B, C, row_scale, col_scale, M, N, K, *A.stride(), *B.stride(), *C.stride(), EVEN_K=K % 2 == 0
+        A,
+        B,
+        C,
+        row_scale,
+        col_scale,
+        M,
+        N,
+        K,
+        *A.stride(),
+        *B.stride(),
+        *C.stride(),
+        EVEN_K=K % 2 == 0,
+        TENSOR_SCALE=col_scale.numel() == 1
     )
     return C
