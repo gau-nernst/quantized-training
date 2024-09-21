@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 import wandb
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -20,8 +21,10 @@ from train_utils import LRSchedule, get_grad_norm, get_optimizer, print_model_st
 
 
 def get_loss(model: LlamaForCausalLM, tokens: Tensor, labels: Tensor):
-    logits = model(tokens).logits.flatten(0, 1)
-    return torch.nn.functional.cross_entropy(logits, labels.view(-1))
+    last_hidden_state = model.model(tokens)[0]
+    last_hidden_state = last_hidden_state.view(-1, last_hidden_state.shape[-1])
+    logits = model.lm_head(last_hidden_state).float()
+    return F.cross_entropy(logits, labels.view(-1))
 
 
 if __name__ == "__main__":
