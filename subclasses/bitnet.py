@@ -88,10 +88,13 @@ class _BitNetTrainingLinear(torch.autograd.Function):
         batch_dims = input.shape[:-1]
         input = input.view(-1, weight.shape[1])
 
-        input_i8, row_scale = quantize_int8(input)
+        # https://github.com/microsoft/unilm/blob/master/bitnet/The-Era-of-1-bit-LLMs__Training_Tips_Code_FAQ.pdf
+        # Figure 4
+        input_i8, row_scale = quantize_int8(input, eps=1e-5)
         weight_i8, tensor_scale = quantize_bitnet_weight(weight._data)
         ctx.save_for_backward(input, weight_i8, tensor_scale)
 
+        # use int8 tensor cores
         out = scaled_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
         out = out.view(*batch_dims, weight.shape[0])
 

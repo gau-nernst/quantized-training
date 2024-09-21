@@ -10,10 +10,10 @@ aten = torch.ops.aten
 
 
 @torch.no_grad()
-def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int = -1):
+def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int = -1, eps: float = 1e-12) -> Tensor:
     # absmax symmetric quantization
     scale = tensor.abs().amax(dim, keepdim=True) / 127
-    inv_scale = 1.0 / scale.float().clip(1e-12)
+    inv_scale = 1.0 / scale.float().clip(eps)
     tensor = tensor.float() * inv_scale  # slightly faster than divide directly
 
     if stochastic_rounding:
