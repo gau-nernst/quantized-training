@@ -27,32 +27,40 @@ git apply kernels/cutlass.patch --directory kernels/cutlass
 
 ## Training
 
-**ViT fine-tuning on RESISC45**
+**LLM pre-training**
 
+```bash
+# using HF streaming dataset, tokenize on-the-fly
+python llm_pretrain.py --train_ds '{"type":"hf_text","dataset":"allenai/c4","subset":"en","split":"train","tokenizer":"llama2"}' --seed 2024
+
+# using pre-tokenized local dataset. see below. "dataset_dir" should contain .bin files
+python llm_pretrain.py --train_ds '{"type":"token","dataset_dir":"tinystories_train"}' --seed 2024
 ```
-python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs 2 --batch_size 64 --model_kwargs '{"img_size":224}' --seed 2024 --compile
+
+To obtain pre-tokenized datasets, either download from [gaunernst/tokenized-datasets](https://huggingface.co/datasets/gaunernst/tokenized-datasets) or run
+
+```bash
+python tokenize_data.py --dataset tinystories --split train
 ```
 
 **LLM fine-tuning on MetaMathQA**
 
-```
+TODO: update command
+
+```bash
 python llm_finetune.py --model HuggingFaceTB/SmolLM-1.7B --freeze_embedding_layer --batch_size 4 --n_steps 100_000 --ckpt_interval 10_000 --seed 2024 --compile
 ```
 
-**LLM pre-training**
+**ViT supervised training**
 
-Prepare data: either download from [gaunernst/tokenized-datasets](https://huggingface.co/datasets/gaunernst/tokenized-datasets) or run
+TODO ImageNet
+
+**ViT fine-tuning on RESISC45**
 
 TODO: update command
 
-```
-python tokenize_data.py --dataset tinystories --split train
-```
-
-Then you can run (`--dataset_dir` should contain `.bin` files)
-
-```
-python llm_pretrain.py --dataset_dir tinystories_train --seed 2024
+```bash
+python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs 2 --batch_size 64 --model_kwargs '{"img_size":224}' --seed 2024 --compile
 ```
 
 ## Speed benchmarks
