@@ -145,22 +145,29 @@ def _triton_mm(A: Tensor, B: Tensor, out_dtype: torch.dtype, acc_dtype: torch.dt
 
 @triton.autotune(configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk"])
 @triton.jit
-def _int8_mm_dequant_kernel(
-    # fmt: off
-    A_ptr, B_ptr, C_ptr,
-    row_scale_ptr,
-    col_scale_ptr,
-    M, N, K,
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_cm, stride_cn,
+def _scaled_mm_kernel(
+    A_ptr,
+    B_ptr,
+    C_ptr,
+    scale1_ptr,
+    scale2_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    EVEN_K: tl.constexpr,
+    COMPUTE_DTYPE: tl.constexpr,
+    SCALE1_TYPE: tl.constexpr,
+    SCALE2_TYPE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr = 8,
-    EVEN_K: tl.constexpr = True,
-    TENSOR_SCALE: tl.constexpr = False,
-    # fmt: on
 ):
     # based on triton.ops.matmul
     pid = tl.program_id(0)
@@ -182,7 +189,8 @@ def _int8_mm_dequant_kernel(
     A = A_ptr + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
     B = B_ptr + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn)
 
-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.int32)
+    ACC_DTYPE = tl.int32 if COMPUTE_DTYPE == tl.int8 else tl.float32
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
     for k in range(K, 0, -BLOCK_K):
         if EVEN_K:
             a = tl.load(A)
@@ -190,6 +198,13 @@ def _int8_mm_dequant_kernel(
         else:
             a = tl.load(A, mask=rk[None, :] < k, other=0.0)
             b = tl.load(B, mask=rk[:, None] < k, other=0.0)
+
+        # mixed mm
+        if a.dtype != COMPUTE_DTYPE:
+            a = a.to(COMPUTE_DTYPE)
+        if b.dtype != COMPUTE_DTYPE:
+            b = b.to(COMPUTE_DTYPE)
+
         acc += tl.dot(a, b)
         A += BLOCK_K * stride_ak
         B += BLOCK_K * stride_bk
@@ -201,45 +216,85 @@ def _int8_mm_dequant_kernel(
     idx_n = rn[None, :]
     mask = (idx_m < M) & (idx_n < N)
 
-    row_scale = tl.load(row_scale_ptr + idx_m, mask=idx_m < M).to(tl.float32)
-    if TENSOR_SCALE:
-        col_scale = tl.load(col_scale_ptr).to(tl.float32)  # scalar
+    acc = acc.to(tl.float32)
+
+    if SCALE1_TYPE == "row":
+        acc *= tl.load(scale1_ptr + idx_m, mask=idx_m < M).to(tl.float32)
+    elif SCALE1_TYPE == "column":
+        acc *= tl.load(scale1_ptr + idx_n, mask=idx_n < N).to(tl.float32)
+    elif SCALE1_TYPE == "tensor":
+        acc *= tl.load(scale1_ptr).to(tl.float32)
     else:
-        col_scale = tl.load(col_scale_ptr + idx_n, mask=idx_n < N).to(tl.float32)
-    acc = acc.to(tl.float32) * row_scale * col_scale
+        tl.static_assert(False, f"SCALE1_TYPE must be row, column, or tensor. Received {SCALE1_TYPE}")
+
+    # optional
+    if SCALE2_TYPE == "row":
+        acc *= tl.load(scale2_ptr + idx_m, mask=idx_m < M).to(tl.float32)
+    elif SCALE2_TYPE == "column":
+        acc *= tl.load(scale2_ptr + idx_n, mask=idx_n < N).to(tl.float32)
+    elif SCALE2_TYPE == "tensor":
+        acc *= tl.load(scale2_ptr).to(tl.float32)
+    else:
+        tl.static_assert(
+            SCALE2_TYPE == "none",
+            f"SCALE2_TYPE must be row, column, tensor, or none. Received {SCALE2_TYPE}",
+        )
 
     # inductor generates a suffix
     xindex = idx_m * stride_cm + idx_n * stride_cn
     tl.store(C_ptr + tl.broadcast_to(xindex, mask.shape), acc, mask)
 
 
-lib.define("int8_mm_dequant(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
+lib.define("scaled_mm(Tensor A, Tensor B, Tensor scale1, Tensor? scale2) -> Tensor")
 
 
-def int8_mm_dequant(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
-    assert A.dtype is torch.int8 and B.dtype is torch.int8
+def scaled_mm(A: Tensor, B: Tensor, scale1: Tensor, scale2: Tensor | None) -> Tensor:
+    """Perform `(A @ B) * scale1 * scale2`. `scale2` is optional. Broadcasting rules apply.
+
+    When both A and B are INT8, INT8 tensor cores will be used. Otherwise, BF16 tensor cores
+    are used.
+    """
+    assert A.dtype in (torch.int8, torch.bfloat16)
+    assert B.dtype in (torch.int8, torch.bfloat16)
     assert A.shape[1] == B.shape[0]
-    assert row_scale.squeeze().shape == (A.shape[0],)
-    assert col_scale.squeeze().shape in ((B.shape[1],), ())
-    return lib_ops.int8_mm_dequant(A, B, row_scale, col_scale)
+    M, N = A.shape[0], B.shape[1]
+    assert scale1.shape in ((M, 1), (1, N), ())
+    assert scale1.is_contiguous()
+    if scale2 is not None:
+        assert scale2.shape in ((M, 1), (1, N), ())
+        assert scale2.is_contiguous()
+    return lib_ops.scaled_mm(A, B, scale1, scale2)
 
 
-@torch.library.impl(lib, "int8_mm_dequant", "Meta")
-def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
-    return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=row_scale.dtype)
+@torch.library.impl(lib, "scaled_mm", "Meta")
+def _(A: Tensor, B: Tensor, scale1: Tensor, scale2: Tensor | None):
+    return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=scale1.dtype)
 
 
-@torch.library.impl(lib, "int8_mm_dequant", "CUDA")
-def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
+@torch.library.impl(lib, "scaled_mm", "CUDA")
+def _(A: Tensor, B: Tensor, scale1: Tensor, scale2: Tensor | None):
     M, K = A.shape
     _, N = B.shape
-    C = torch.empty(M, N, device=A.device, dtype=row_scale.dtype)
-    _int8_mm_dequant_kernel[_grid](
+    C = torch.empty(M, N, device=A.device, dtype=scale1.dtype)
+
+    # this is faster than using a dictionary lookup table
+    def get_scale_type(scale: Tensor | None):
+        if scale is None:
+            return "none"
+        if scale.shape == (M, 1):
+            return "row"
+        if scale.shape == (1, N):
+            return "column"
+        if scale.shape == ():
+            return "tensor"
+        raise ValueError
+
+    _scaled_mm_kernel[_grid](
         A,
         B,
         C,
-        row_scale,
-        col_scale,
+        scale1,
+        scale2,
         M,
         N,
         K,
@@ -247,6 +302,8 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
         *B.stride(),
         *C.stride(),
         EVEN_K=K % 2 == 0,
-        TENSOR_SCALE=col_scale.numel() == 1
+        COMPUTE_DTYPE=tl.int8 if A.dtype == B.dtype == torch.int8 else tl.bfloat16,
+        SCALE1_TYPE=get_scale_type(scale1),
+        SCALE2_TYPE=get_scale_type(scale2),
     )
     return C

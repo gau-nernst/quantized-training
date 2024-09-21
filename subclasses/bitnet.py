@@ -3,10 +3,9 @@ import torch.nn.functional as F
 import torch.utils._pytree as pytree
 from torch import Tensor, nn
 
-from kernels import int8_mm_dequant
+from kernels import scaled_mm
 
 from .int8 import quantize_int8
-from .mixed_precision import _dynamic_int8_mm
 
 aten = torch.ops.aten
 
@@ -93,7 +92,7 @@ class _BitNetTrainingLinear(torch.autograd.Function):
         weight_i8, tensor_scale = quantize_bitnet_weight(weight._data)
         ctx.save_for_backward(input, weight_i8, tensor_scale)
 
-        out = int8_mm_dequant(input_i8.contiguous(), weight_i8.T, row_scale, tensor_scale)
+        out = scaled_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
         out = out.view(*batch_dims, weight.shape[0])
 
         out = out + bias if bias is not None else out
@@ -108,14 +107,15 @@ class _BitNetTrainingLinear(torch.autograd.Function):
         grad_output = grad_output.view(-1, weight_i8.shape[0])
         input = input.view(-1, weight_i8.shape[1])
 
-        # NOTE: original BitNet does not quantize backward pass
+        # NOTE: we can potentially speedup training by also quantizing the backward pass
+        # to use INT8 tensor cores
         if ctx.needs_input_grad[0]:
-            grad_output_i8, row_scale = quantize_int8(grad_output)
-            grad_input = int8_mm_dequant(grad_output_i8, weight_i8, row_scale, tensor_scale)
+            # mixed mm
+            grad_input = scaled_mm(grad_output, weight_i8, tensor_scale, None)
             grad_input = grad_input.view(*batch_dims, weight_i8.shape[1])
 
         if ctx.needs_input_grad[1]:
-            grad_weight = _dynamic_int8_mm(input.T, grad_output, False).T
+            grad_weight = grad_output.T @ input
 
         if ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(0)
