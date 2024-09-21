@@ -38,15 +38,24 @@ def quantize_model(model: nn.Module, quantize: str | None, **kwargs):
         convert_int8_quantized_training(model, config=config)
 
     elif quantize == "bitnet":
+        eps = kwargs.get("eps", 1e-5)
+
         # only for LlamaForCausalLM
-        def remove_rmsnorm(module: nn.Module):
+        def patch_rmsnorm(module: nn.Module):
             for name, child in module.named_children():
+                # remove old RMSNorm
                 if name in ("input_layernorm", "post_attention_layernorm"):
                     setattr(module, name, nn.Identity())
-                else:
-                    remove_rmsnorm(child)
 
-        remove_rmsnorm(model)
+                # insert new RMSNorm. TODO: for pre-trained models, inherit from old RMSNorm
+                elif isinstance(child, nn.Linear):
+                    norm = nn.RMSNorm(child.in_features, eps, device=child.weight.device, dtype=child.weight.dtype)
+                    setattr(module, name, nn.Sequential(norm, child))
+
+                else:
+                    patch_rmsnorm(child)
+
+        patch_rmsnorm(model)
         convert_bitnet(model, **kwargs)
 
     else:

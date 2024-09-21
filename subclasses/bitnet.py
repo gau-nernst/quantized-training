@@ -126,17 +126,15 @@ class _BitNetTrainingLinear(torch.autograd.Function):
         return grad_input, grad_weight, grad_bias
 
 
-# this is not complete. still need to remove other RMSNorm layers
-def convert_bitnet(module: nn.Module, *, eps: float = 1e-5):
-    for name, child in module.named_children():
-        if isinstance(child, nn.Linear):
-            child.weight = nn.Parameter(
-                BitNetTrainingLinearWeight(child.weight.detach()),
-                requires_grad=child.weight.requires_grad,
-            )
-            # insert RMSNorm in front
-            norm = nn.RMSNorm(child.in_features, eps, device=child.weight.device, dtype=child.weight.dtype)
-            setattr(module, name, nn.Sequential(norm, child))
-        else:
-            convert_bitnet(child, eps=eps)
+# NOTE: this does not remove old RMSNorm layers and insert new ones
+# users should do this on their own
+def convert_bitnet(module: nn.Module):
+    if isinstance(module, nn.Linear):
+        module.weight = nn.Parameter(
+            BitNetTrainingLinearWeight(module.weight.detach()),
+            requires_grad=module.weight.requires_grad,
+        )
+    else:
+        for m in module.children():
+            convert_bitnet(m)
     return module
