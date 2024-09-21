@@ -4,3 +4,6 @@ datasets
 wandb
 lm-eval
 torchao
+sentencepiece
+tiktoken
+bitsandbytes
