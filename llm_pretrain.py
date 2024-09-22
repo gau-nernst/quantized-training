@@ -11,10 +11,11 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 import wandb
-from torch import Tensor
+from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
+from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
 from data import get_dataset
 from train_utils import LRSchedule, get_grad_norm, get_optimizer, print_model_stats, quantize_model
@@ -71,9 +72,21 @@ if __name__ == "__main__":
         max_position_embeddings=args.seq_len,
         use_cache=False,
     )
-    model = LlamaForCausalLM(config).bfloat16().cuda()
+    model = LlamaForCausalLM(config)
+
+    # only cast nn.Embedding and nn.Linear weights to BF16. RoPE cache and RMSNorm weights remain in FP32
+    # in BF16, layernorm weights can't be learned due to underflow
+    for m in model.modules():
+        if isinstance(m, (nn.Linear, nn.Embedding)):
+            m.bfloat16()
+        elif isinstance(m, LlamaRMSNorm):
+            assert m.weight.dtype is torch.float32
+    assert model.model.rotary_emb.inv_freq.dtype is torch.float32
+
+    model.cuda()
     if args.activation_checkpointing:
         model.gradient_checkpointing_enable()
+
     quantize_model(model.model, args.quantize, **args.quantize_kwargs)
     if args.quantize_lm_head:
         quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)

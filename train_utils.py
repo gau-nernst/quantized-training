@@ -1,11 +1,12 @@
 import math
+from copy import deepcopy
 from functools import partial
 
 import bitsandbytes as bnb
 import torch
 import torchao.prototype.low_bit_optim as low_bit_optim
 from torch import Tensor, nn
-from transformers import LlamaForCausalLM
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRMSNorm
 
 from subclasses import (
     Int8QTConfig,
@@ -38,24 +39,31 @@ def quantize_model(model: nn.Module, quantize: str | None, **kwargs):
         convert_int8_quantized_training(model, config=config)
 
     elif quantize == "bitnet":
-        eps = kwargs.get("eps", 1e-5)
-
         # only for LlamaForCausalLM
         def patch_rmsnorm(module: nn.Module):
-            for name, child in module.named_children():
+            if isinstance(module, LlamaDecoderLayer):
+                # inherit weight from old RMSNorm
+                module.self_attn.q_proj = nn.Sequential(deepcopy(module.input_layernorm), module.self_attn.q_proj)
+                module.self_attn.k_proj = nn.Sequential(deepcopy(module.input_layernorm), module.self_attn.k_proj)
+                module.self_attn.v_proj = nn.Sequential(deepcopy(module.input_layernorm), module.self_attn.v_proj)
+
+                module.mlp.gate_proj = nn.Sequential(deepcopy(module.post_attention_layernorm), module.mlp.gate_proj)
+                module.mlp.up_proj = nn.Sequential(deepcopy(module.post_attention_layernorm), module.mlp.up_proj)
+
+                # new RMSNorm from scratch
+                device = module.input_layernorm.weight.device
+                dtype = module.input_layernorm.weight.dtype
+                norm = LlamaRMSNorm(module.self_attn.o_proj.in_features, module.input_layernorm.variance_epsilon)
+                module.self_attn.o_proj = nn.Sequential(norm.to(device=device, dtype=dtype), module.self_attn.o_proj)
+
+                norm = LlamaRMSNorm(module.mlp.down_proj.in_features, module.post_attention_layernorm.variance_epsilon)
+                module.mlp.down_proj = nn.Sequential(norm.to(device=device, dtype=dtype), module.mlp.down_proj)
+
                 # remove old RMSNorm
-                if name in ("input_layernorm", "post_attention_layernorm"):
-                    setattr(module, name, nn.Identity())
+                module.input_layernorm = nn.Identity()
+                module.post_attention_layernorm = nn.Identity()
 
-                # insert new RMSNorm. TODO: for pre-trained models, inherit from old RMSNorm
-                elif isinstance(child, nn.Linear):
-                    norm = nn.RMSNorm(child.in_features, eps, device=child.weight.device, dtype=child.weight.dtype)
-                    setattr(module, name, nn.Sequential(norm, child))
-
-                else:
-                    patch_rmsnorm(child)
-
-        patch_rmsnorm(model)
+        model.apply(patch_rmsnorm)
         convert_bitnet(model, **kwargs)
 
     else:
