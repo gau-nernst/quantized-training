@@ -25,34 +25,25 @@ if __name__ == "__main__":
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
 
+    kwargs = dict(
+        pretrained_model_name_or_path=args.model_id,
+        max_position_embeddings=args.seq_len,
+        use_cache=False,
+        torch_dtype=torch.bfloat16,
+    )
+
     if args.checkpoint is None:
         # load pre-trained weights
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_id,
-            max_position_embeddings=args.seq_len,
-            use_cache=False,
-            torch_dtype=torch.bfloat16,
-        )
-        model.cuda()
-
-        quantize_model(model.model, args.quantize, **args.quantize_kwargs)
-        if args.quantize_lm_head:
-            quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)
-
+        model = AutoModelForCausalLM.from_pretrained(**kwargs).cuda()
     else:
         # don't load pre-trained weights
-        config = AutoConfig.from_pretrained(
-            args.model_id,
-            max_position_embeddings=args.seq_len,
-            use_cache=False,
-            torch_dtype=torch.bfloat16,
-        )
-        model = AutoModelForCausalLM.from_config(config).cuda()
+        model = AutoModelForCausalLM.from_config(AutoConfig.from_pretrained(**kwargs)).cuda()
 
-        quantize_model(model.model, args.quantize, **args.quantize_kwargs)
-        if args.quantize_lm_head:
-            quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)
+    quantize_model(model.model, args.quantize, **args.quantize_kwargs)
+    if args.quantize_lm_head:
+        quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)
 
+    if args.checkpoint is not None:
         # load weights from checkpoint, after quantization, since BitNet requires model modification
         state_dict = torch.load(args.checkpoint, map_location="cpu", mmap=True)
         model.load_state_dict(state_dict["model"])
