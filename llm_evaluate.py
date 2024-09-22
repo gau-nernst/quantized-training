@@ -31,8 +31,9 @@ if __name__ == "__main__":
             args.model_id,
             max_position_embeddings=args.seq_len,
             use_cache=False,
+            torch_dtype=torch.bfloat16,
         )
-        model.bfloat16().cuda()
+        model.cuda()
 
         quantize_model(model.model, args.quantize, **args.quantize_kwargs)
         if args.quantize_lm_head:
@@ -44,8 +45,9 @@ if __name__ == "__main__":
             args.model_id,
             max_position_embeddings=args.seq_len,
             use_cache=False,
+            torch_dtype=torch.bfloat16,
         )
-        model = AutoModelForCausalLM.from_config(config).bfloat16().cuda()
+        model = AutoModelForCausalLM.from_config(config).cuda()
 
         quantize_model(model.model, args.quantize, **args.quantize_kwargs)
         if args.quantize_lm_head:

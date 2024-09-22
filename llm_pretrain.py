@@ -28,6 +28,25 @@ def get_loss(model: LlamaForCausalLM, tokens: Tensor, labels: Tensor):
     return F.cross_entropy(logits, labels.view(-1))
 
 
+# maintain FP32 weight. cast weight to BF16 to simulate inference/FSDP mixed-precision training
+# instead of casting output to BF16.
+class RMSNormFp32(nn.RMSNorm):
+    def forward(self, x: Tensor):
+        assert self.weight.dtype is torch.float32
+        return F.rms_norm(x, self.normalized_shape, self.weight.to(x.dtype), self.eps)
+
+    @staticmethod
+    def convert_llama_rmsnorm(module: nn.Module):
+        if isinstance(module, LlamaRMSNorm):
+            m = RMSNormFp32(module.weight.shape, module.variance_epsilon, device=module.weight.device)
+            m.weight.data.copy_(module.weight)
+            return m
+
+        for name, child in module.named_children():
+            setattr(module, name, RMSNormFp32.convert_llama_rmsnorm(child))
+        return module
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_id", default="mini_llamas/Llama-2-470m")
@@ -73,23 +92,24 @@ if __name__ == "__main__":
         use_cache=False,
     )
     model = LlamaForCausalLM(config)
+    if args.activation_checkpointing:
+        model.gradient_checkpointing_enable()
 
     # only cast nn.Embedding and nn.Linear weights to BF16. RoPE cache and RMSNorm weights remain in FP32
     # in BF16, layernorm weights can't be learned due to underflow
     for m in model.modules():
         if isinstance(m, (nn.Linear, nn.Embedding)):
             m.bfloat16()
-        elif isinstance(m, LlamaRMSNorm):
-            assert m.weight.dtype is torch.float32
     assert model.model.rotary_emb.inv_freq.dtype is torch.float32
-
     model.cuda()
-    if args.activation_checkpointing:
-        model.gradient_checkpointing_enable()
 
     quantize_model(model.model, args.quantize, **args.quantize_kwargs)
     if args.quantize_lm_head:
         quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)
+
+    # do this after quantization because BitNet will add more RMSNorm layers
+    RMSNormFp32.convert_llama_rmsnorm(model)
+
     print_model_stats(model)
 
     optim = get_optimizer(args.optim, model, args.lr, args.weight_decay, **args.optim_kwargs)
