@@ -264,20 +264,19 @@ def scaled_mm(A: Tensor, B: Tensor, scale1: Tensor, scale2: Tensor | None) -> Te
         assert scale2.shape in ((M, 1), (1, N), ())
         assert scale2.is_contiguous()
 
-    if torch.compiler.is_compiling():
-        return lib_ops.scaled_mm(A, B, scale1, scale2)
+    return lib_ops.scaled_mm(A, B, scale1, scale2)
 
+    # non-triton kernel mode to avoid excessive autotune time during lm_eval
+    # try to match numerics of the triton kernel
+    # torch.compiler.is_compiling() doesn't seem to work
+    if A.dtype == B.dtype == torch.int8:
+        out = torch._int_mm(A, B)
     else:
-        # eager mode don't use triton kernel to avoid excessive autotune time during lm_eval
-        # try to match numerics of the triton kernel
-        if A.dtype == B.dtype == torch.int8:
-            out = torch._int_mm(A, B)
-        else:
-            out = A.bfloat16() @ B.bfloat16()
-        out = out.float() * scale1.float()
-        if scale2 is not None:
-            out = out * scale2.float()
-        return out.to(scale1.dtype)
+        out = A.bfloat16() @ B.bfloat16()
+    out = out.float() * scale1.float()
+    if scale2 is not None:
+        out = out * scale2.float()
+    return out.to(scale1.dtype)
 
 
 @torch.library.impl(lib, "scaled_mm", "Meta")
