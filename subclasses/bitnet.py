@@ -76,10 +76,13 @@ class BitNetTrainingLinearWeight(Tensor):
             return out
 
 
-def quantize_bitnet_weight(w: Tensor):
-    scale = w.abs().mean().clip(1e-5)  # tensor-wise abs-mean
-    w = (w / scale).round().clip(-1, 1).to(torch.int8)
-    return w, scale
+def quantize_bitnet_weight(w: Tensor, eps: float = 1e-5) -> Tensor:
+    dtype = w.dtype
+    w = w.float()
+    scale = w.abs().mean()  # tensor-wise abs-mean. FP32
+    w = w / scale.clip(eps)
+    w = w.round().clip(-1, 1).to(torch.int8)
+    return w, scale.to(dtype)
 
 
 class _BitNetTrainingLinear(torch.autograd.Function):

@@ -12,9 +12,10 @@ aten = torch.ops.aten
 @torch.no_grad()
 def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int = -1, eps: float = 1e-12) -> Tensor:
     # absmax symmetric quantization
+    dtype = tensor.dtype
+    tensor = tensor.float()
     scale = tensor.abs().amax(dim, keepdim=True) / 127
-    inv_scale = 1.0 / scale.float().clip(eps)
-    tensor = tensor.float() * inv_scale  # slightly faster than divide directly
+    tensor = tensor / scale.clip(eps)
 
     if stochastic_rounding:
         tensor = (tensor + torch.rand_like(tensor)).floor()
@@ -22,7 +23,7 @@ def quantize_int8(tensor: Tensor, stochastic_rounding: bool = False, *, dim: int
         tensor = tensor.round()
 
     tensor = tensor.clip(-128, 127).to(torch.int8)
-    return tensor, scale
+    return tensor, scale.to(dtype)
 
 
 class Int8QTConfig(NamedTuple):
