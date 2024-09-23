@@ -63,24 +63,6 @@ def quantize_model(model: nn.Module, quantize: str | None, **kwargs):
                 module.input_layernorm = nn.Identity()
                 module.post_attention_layernorm = nn.Identity()
 
-                for bitlinear in [
-                    module.self_attn.q_proj,
-                    module.self_attn.k_proj,
-                    module.self_attn.v_proj,
-                    module.self_attn.o_proj,
-                    module.mlp.gate_proj,
-                    module.mlp.up_proj,
-                    module.mlp.down_proj,
-                ]:
-                    # inspired by SmoothQuant. transfer column-wise scaling from weight to RMSNorm,
-                    # while maintaing the same tensor-wise scaling.
-                    # this helps pre-trained weights easier to quantize.
-                    abs_weight = bitlinear[1].weight.detach().float().abs()
-                    column_scale = abs_weight.mean(0)
-                    tensor_scale = abs_weight.mean()
-                    bitlinear[0].weight.data.mul_(column_scale / tensor_scale.clip(1e-5))
-                    bitlinear[1].weight.data.mul_(tensor_scale / column_scale.clip(1e-5))
-
         model.apply(patch_rmsnorm)
         convert_bitnet(model, **kwargs)
 
