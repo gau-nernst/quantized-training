@@ -90,6 +90,8 @@ if __name__ == "__main__":
 
     rank = int(os.environ.get("RANK", 0))
     is_dist = "RANK" in os.environ
+    is_ddp = is_dist and args.ddp
+    is_fsdp = is_dist and not args.ddp
     is_master = rank == 0
     world_size = 1
     if is_dist:
@@ -136,24 +138,25 @@ if __name__ == "__main__":
     # during weight update if it is BF16.
     RMSNormFp32.convert_llama_rmsnorm(model)
 
-    if is_dist:
-        if args.ddp:
-            # not compatible with activation checkpointing https://github.com/pytorch/pytorch/issues/104674
-            # gradients all-reduce won't overlap with backward. however, the speedup thanks to full
-            # compiled graph outweighs comm overlap.
+    if is_ddp:
+        # not compatible with activation checkpointing https://github.com/pytorch/pytorch/issues/104674
+        # gradients all-reduce won't overlap with backward. however, the speedup thanks to full
+        # compiled graph outweighs comm overlap.
+        if args.activation_checkpointing:
             torch._dynamo.config.optimize_ddp = False
-            model = DDP(model)
+        model = DDP(model)
 
-        else:
-            # TODO: reduce in FP32?
-            # need to fully_shard RMSNorm separately since it's FP32
-            # TODO: add optimization from awgu https://github.com/awgu/torchtrain/commits/fsdp_rmsnorm/
-            for module in model.modules():
-                if isinstance(module, RMSNormFp32):
-                    fully_shard(module)
-            for layer in model.model.layers:
-                fully_shard(layer)
-            fully_shard(model)
+    elif is_fsdp:
+        # TODO: reduce in FP32?
+        # need to fully_shard RMSNorm separately since it's FP32
+        # TODO: add optimization from awgu https://github.com/awgu/torchtrain/commits/fsdp_rmsnorm/
+        for module in model.modules():
+            if isinstance(module, RMSNormFp32):
+                fully_shard(module)
+        for layer in model.model.layers:
+            fully_shard(layer)
+            layer.compile()  # FSDP is more performant when compiling this way
+        fully_shard(model)
 
     if is_master:
         print_model_stats(model)
@@ -183,6 +186,7 @@ if __name__ == "__main__":
     log_interval = 50
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True, disable=is_master == False)
     model.train()
+    loss_fn = get_loss if is_fsdp else torch.compile(get_loss)
     time0 = time.time()
     if args.profile and is_master:
         torch._inductor.config.triton.unique_kernel_names = True
@@ -192,7 +196,7 @@ if __name__ == "__main__":
         # TODO: disable gradient all-reduce for non-last micro-steps
         for _ in range(args.gradient_accumulation):
             tokens, labels = next(dloader)
-            loss = torch.compile(get_loss)(model, tokens.cuda(), labels.cuda())
+            loss = loss_fn(model, tokens.cuda(), labels.cuda())
             loss.backward()
 
         if lr_schedule is not None:
@@ -235,12 +239,10 @@ if __name__ == "__main__":
                 optim=optim.state_dict(),
                 step=step,
             )
-            if is_dist:
-                if is_dist and not args.ddp:  # FSDP
-                    torch.save(ckpt, args.save_dir / f"last_{rank}.pth")
-
-                elif is_master:  # single-device or DDP
-                    torch.save(ckpt, args.save_dir / "last.pth")
+            if is_fsdp:  # FSDP saves on all ranks
+                torch.save(ckpt, args.save_dir / f"last_{rank}.pth")
+            elif is_master:  # single-device or DDP - only rank 0
+                torch.save(ckpt, args.save_dir / "last.pth")
 
         # TODO: make this work with distributed
         if args.val_interval > 0 and step % args.val_interval == 0 and args.val_ds is not None:
