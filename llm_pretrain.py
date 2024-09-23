@@ -16,6 +16,7 @@ import torch.nn.functional as F
 import wandb
 from torch import Tensor, nn
 from torch.distributed._composable.fsdp import fully_shard
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
@@ -62,6 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--quantize_kwargs", type=json.loads, default=dict())
     parser.add_argument("--quantize_lm_head", action="store_true")
     parser.add_argument("--activation_checkpointing", action="store_true")
+    parser.add_argument("--ddp", action="store_true")
 
     parser.add_argument("--train_ds", type=json.loads, required=True)
     parser.add_argument("--n_workers", type=int, default=1)
@@ -87,17 +89,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     rank = int(os.environ.get("RANK", 0))
-    is_fsdp = "RANK" in os.environ
+    is_dist = "RANK" in os.environ
     is_master = rank == 0
     world_size = 1
-    if is_fsdp:
+    if is_dist:
         dist.init_process_group(backend="nccl")
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         torch.cuda.set_device(local_rank)
 
         if is_master:
-            print(f"Using FSDP with {world_size=}")
+            print(f"Using distributed training with {world_size=}")
 
     assert args.batch_size % (args.gradient_accumulation * world_size) == 0
     if args.seed is not None:
@@ -118,8 +120,7 @@ if __name__ == "__main__":
     if args.activation_checkpointing:
         model.gradient_checkpointing_enable()
 
-    # only cast nn.Embedding and nn.Linear weights to BF16. RoPE cache and RMSNorm weights remain in FP32
-    # in BF16, layernorm weights can't be learned due to underflow
+    # keep RoPE cache in FP32
     for m in model.modules():
         if isinstance(m, (nn.Linear, nn.Embedding, LlamaRMSNorm)):
             m.bfloat16()
@@ -131,18 +132,28 @@ if __name__ == "__main__":
         quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)
 
     # do this after quantization because BitNet will add more RMSNorm layers
+    # this will force RMSNorm weights to be in FP32, since it might be underflow
+    # during weight update if it is BF16.
     RMSNormFp32.convert_llama_rmsnorm(model)
 
-    if is_fsdp:
-        # TODO: reduce in FP32?
-        # need to fully_shard RMSNorm separately since it's FP32
-        # TODO: add optimization from awgu https://github.com/awgu/torchtrain/commits/fsdp_rmsnorm/
-        for module in model.modules():
-            if isinstance(module, RMSNormFp32):
-                fully_shard(module)
-        for layer in model.model.layers:
-            fully_shard(layer)
-        fully_shard(model)
+    if is_dist:
+        if args.ddp:
+            # not compatible with activation checkpointing https://github.com/pytorch/pytorch/issues/104674
+            # gradients all-reduce won't overlap with backward. however, the speedup thanks to full
+            # compiled graph outweighs comm overlap.
+            torch._dynamo.config.optimize_ddp = False
+            model = DDP(model)
+
+        else:
+            # TODO: reduce in FP32?
+            # need to fully_shard RMSNorm separately since it's FP32
+            # TODO: add optimization from awgu https://github.com/awgu/torchtrain/commits/fsdp_rmsnorm/
+            for module in model.modules():
+                if isinstance(module, RMSNormFp32):
+                    fully_shard(module)
+            for layer in model.model.layers:
+                fully_shard(layer)
+            fully_shard(model)
 
     if is_master:
         print_model_stats(model)
@@ -188,7 +199,7 @@ if __name__ == "__main__":
             lr_schedule.set_lr(step, optim)
 
         if step % log_interval == 0:
-            if is_fsdp:
+            if is_dist:
                 dist.all_reduce(loss, dist.ReduceOp.AVG)
             log_dict = dict(
                 loss=loss.item(),
@@ -224,10 +235,14 @@ if __name__ == "__main__":
                 optim=optim.state_dict(),
                 step=step,
             )
-            ckpt_name = f"last_{rank}.pth" if is_fsdp else "last.pth"
-            torch.save(ckpt, args.save_dir / ckpt_name)
+            if is_dist:
+                if is_dist and not args.ddp:  # FSDP
+                    torch.save(ckpt, args.save_dir / f"last_{rank}.pth")
 
-        # TODO: make this work with FSDP
+                elif is_master:  # single-device or DDP
+                    torch.save(ckpt, args.save_dir / "last.pth")
+
+        # TODO: make this work with distributed
         if args.val_interval > 0 and step % args.val_interval == 0 and args.val_ds is not None:
             val_ds = get_dataset(seq_len=args.seq_len, eval=True, **args.val_ds)
             val_dloader = DataLoader(val_ds, batch_size=bsize, num_workers=1)
@@ -249,5 +264,5 @@ if __name__ == "__main__":
             prof.stop()
             prof.export_chrome_trace("trace.json.gz")
 
-    if is_fsdp:
+    if is_dist:
         dist.destroy_process_group()
