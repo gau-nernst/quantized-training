@@ -1,3 +1,5 @@
+# torchrun --standalone --nproc_per_node=2 llm_pretrain.py
+
 import os
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -9,9 +11,11 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
 from torch import Tensor, nn
+from torch.distributed._composable.fsdp import fully_shard
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
@@ -22,10 +26,12 @@ from train_utils import LRSchedule, get_grad_norm, get_optimizer, print_model_st
 
 
 def get_loss(model: LlamaForCausalLM, tokens: Tensor, labels: Tensor):
-    last_hidden_state = model.model(tokens)[0]
-    last_hidden_state = last_hidden_state.view(-1, last_hidden_state.shape[-1])
-    logits = model.lm_head(last_hidden_state).float()
-    return F.cross_entropy(logits, labels.view(-1))
+    # last_hidden_state = model.model(tokens)[0]
+    # last_hidden_state = last_hidden_state.view(-1, last_hidden_state.shape[-1])
+    # logits = model.lm_head(last_hidden_state).float()
+    # return F.cross_entropy(logits, labels.view(-1))
+    logits = model(tokens)[0].float()
+    return F.cross_entropy(logits.view(-1, logits.shape[-1]), labels.view(-1))
 
 
 # maintain FP32 weight. cast weight to BF16 to simulate inference/FSDP mixed-precision training
@@ -80,9 +86,22 @@ if __name__ == "__main__":
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
 
-    assert args.batch_size % args.gradient_accumulation == 0
+    rank = int(os.environ.get("RANK", 0))
+    is_fsdp = "RANK" in os.environ
+    is_master = rank == 0
+    world_size = 1
+    if is_fsdp:
+        dist.init_process_group(backend="nccl")
+        local_rank = int(os.environ["LOCAL_RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        torch.cuda.set_device(local_rank)
+
+        if is_master:
+            print(f"Using FSDP with {world_size=}")
+
+    assert args.batch_size % (args.gradient_accumulation * world_size) == 0
     if args.seed is not None:
-        torch.manual_seed(args.seed)
+        torch.manual_seed(args.seed + rank)
     if args.profile:
         args.n_steps = 5
     args.torch_version = torch.__version__
@@ -102,7 +121,7 @@ if __name__ == "__main__":
     # only cast nn.Embedding and nn.Linear weights to BF16. RoPE cache and RMSNorm weights remain in FP32
     # in BF16, layernorm weights can't be learned due to underflow
     for m in model.modules():
-        if isinstance(m, (nn.Linear, nn.Embedding)):
+        if isinstance(m, (nn.Linear, nn.Embedding, LlamaRMSNorm)):
             m.bfloat16()
     assert model.model.rotary_emb.inv_freq.dtype is torch.float32
     model.cuda()
@@ -114,7 +133,19 @@ if __name__ == "__main__":
     # do this after quantization because BitNet will add more RMSNorm layers
     RMSNormFp32.convert_llama_rmsnorm(model)
 
-    print_model_stats(model)
+    if is_fsdp:
+        # TODO: reduce in FP32?
+        # need to fully_shard RMSNorm separately since it's FP32
+        # TODO: add optimization from awgu https://github.com/awgu/torchtrain/commits/fsdp_rmsnorm/
+        for module in model.modules():
+            if isinstance(module, RMSNormFp32):
+                fully_shard(module)
+        for layer in model.model.layers:
+            fully_shard(layer)
+        fully_shard(model)
+
+    if is_master:
+        print_model_stats(model)
 
     optim = get_optimizer(args.optim, model, args.lr, args.weight_decay, **args.optim_kwargs)
     if args.lr_schedule_kwargs is not None:
@@ -123,22 +154,23 @@ if __name__ == "__main__":
         lr_schedule = None
 
     ds = get_dataset(seq_len=args.seq_len, eval=False, **args.train_ds)
-    bsize = args.batch_size // args.gradient_accumulation
+    bsize = args.batch_size // (args.gradient_accumulation * world_size)
     dloader = iter(DataLoader(ds, batch_size=bsize, num_workers=args.n_workers, pin_memory=True))
 
     args.save_dir = Path("runs/llm_pretrain") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.run_name}"
-    args.save_dir.mkdir(parents=True, exist_ok=True)
-    logger = wandb.init(
-        dir="/tmp",
-        config=args,
-        project=args.project,
-        name=args.run_name,
-        mode="disabled" if args.profile else None,
-    )
+    if is_master:
+        args.save_dir.mkdir(parents=True, exist_ok=True)
+        logger = wandb.init(
+            dir="/tmp",
+            config=args,
+            project=args.project,
+            name=args.run_name,
+            mode="disabled" if args.profile else None,
+        )
 
     step = 0
     log_interval = 50
-    pbar = tqdm(total=args.n_steps, dynamic_ncols=True)
+    pbar = tqdm(total=args.n_steps, dynamic_ncols=True, disable=is_master == False)
     model.train()
     time0 = time.time()
     if args.profile:
@@ -146,6 +178,7 @@ if __name__ == "__main__":
         prof = torch.profiler.profile()
 
     while step < args.n_steps:
+        # TODO: disable gradient all-reduce for non-last micro-steps
         for _ in range(args.gradient_accumulation):
             tokens, labels = next(dloader)
             loss = torch.compile(get_loss)(model, tokens.cuda(), labels.cuda())
@@ -154,14 +187,16 @@ if __name__ == "__main__":
         if lr_schedule is not None:
             lr_schedule.set_lr(step, optim)
 
+        # TODO: grad_norm does not match single GPU. to investigate
         if step % log_interval == 0:
             log_dict = dict(
                 loss=loss.item(),
                 grad_norm=get_grad_norm(model),
                 lr=optim.param_groups[0]["lr"],
             )
-            logger.log(log_dict, step=step)
-            pbar.set_postfix(loss=log_dict["loss"])
+            if is_master:
+                logger.log(log_dict, step=step)
+                pbar.set_postfix(loss=log_dict["loss"])
 
         optim.step()
         optim.zero_grad()
@@ -171,7 +206,7 @@ if __name__ == "__main__":
         if args.profile and step == 1:
             prof.start()
 
-        if step % log_interval == 0:
+        if step % log_interval == 0 and is_master:
             tokens_per_batch = args.batch_size * args.seq_len
             time1 = time.time()
             log_dict = dict(
@@ -188,8 +223,10 @@ if __name__ == "__main__":
                 optim=optim.state_dict(),
                 step=step,
             )
-            torch.save(ckpt, args.save_dir / "last.pth")
+            ckpt_name = f"last_{rank}.pth" if is_fsdp else "last.pth"
+            torch.save(ckpt, args.save_dir / ckpt_name)
 
+        # TODO: make this work with FSDP
         if args.val_interval > 0 and step % args.val_interval == 0 and args.val_ds is not None:
             val_ds = get_dataset(seq_len=args.seq_len, eval=True, **args.val_ds)
             val_dloader = DataLoader(val_ds, batch_size=bsize, num_workers=1)
@@ -205,7 +242,11 @@ if __name__ == "__main__":
             logger.log(dict(val_loss=val_loss), step=step)
             model.train()
 
-    logger.finish()
-    if args.profile:
-        prof.stop()
-        prof.export_chrome_trace("trace.json.gz")
+    if is_master:
+        logger.finish()
+        if args.profile:
+            prof.stop()
+            prof.export_chrome_trace("trace.json.gz")
+
+    if is_fsdp:
+        dist.destroy_process_group()

@@ -1,9 +1,11 @@
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
 from datasets import load_dataset
+from datasets.distributed import split_dataset_by_node
 from torch import Tensor
 from torch.utils.data import IterableDataset
 
@@ -69,14 +71,17 @@ class HFTextDataset(IterableDataset):
         self.eval = eval
 
     def __iter__(self):
+        ds = split_dataset_by_node(
+            dataset=self.ds,
+            rank=int(os.environ.get("RANK", 0)),
+            world_size=int(os.environ.get("WORLD_SIZE", 1)),
+        )
         buffer = []
 
         while True:
-            if self.eval:
-                ds = self.ds
-            else:
+            if self.eval is False:
                 seed = torch.empty(1, dtype=torch.int64).random_().item()
-                ds = self.ds.shuffle(seed, buffer_size=10_000)
+                ds = ds.shuffle(seed, buffer_size=10_000)
 
             for sample in ds.select_columns("text"):
                 buffer.extend(self.tokenizer(sample["text"]))

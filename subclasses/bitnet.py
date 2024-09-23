@@ -1,3 +1,5 @@
+from typing import Any, Optional, Tuple
+
 import torch
 import torch.nn.functional as F
 import torch.utils._pytree as pytree
@@ -74,6 +76,24 @@ class BitNetTrainingLinearWeight(Tensor):
         else:
             # return new unwrapped object
             return out
+
+    def fsdp_pre_all_gather(self, mesh):
+        data = self._data
+        return (data,), ()
+
+    def fsdp_post_all_gather(
+        self,
+        all_gather_outputs: Tuple[Tensor, ...],
+        metadata: Any,
+        param_dtype: torch.dtype,
+        *,
+        out: Optional[Tensor] = None,
+    ):
+        (data,) = all_gather_outputs
+        if out is not None:
+            assert isinstance(out, BitNetTrainingLinearWeight)
+            return
+        return BitNetTrainingLinearWeight(data), all_gather_outputs
 
 
 def quantize_bitnet_weight(w: Tensor, eps: float = 1e-5) -> Tensor:
