@@ -173,7 +173,7 @@ if __name__ == "__main__":
     pbar = tqdm(total=args.n_steps, dynamic_ncols=True, disable=is_master == False)
     model.train()
     time0 = time.time()
-    if args.profile:
+    if args.profile and is_master:
         torch._inductor.config.triton.unique_kernel_names = True
         prof = torch.profiler.profile()
 
@@ -204,7 +204,7 @@ if __name__ == "__main__":
 
         step += 1
         pbar.update()
-        if args.profile and step == 1:
+        if args.profile and step == 1 and is_master:
             prof.start()
 
         if step % log_interval == 0 and is_master:
