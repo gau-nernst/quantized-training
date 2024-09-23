@@ -187,8 +187,9 @@ if __name__ == "__main__":
         if lr_schedule is not None:
             lr_schedule.set_lr(step, optim)
 
-        # TODO: grad_norm does not match single GPU. to investigate
         if step % log_interval == 0:
+            if is_fsdp:
+                dist.all_reduce(loss, dist.ReduceOp.AVG)
             log_dict = dict(
                 loss=loss.item(),
                 grad_norm=get_grad_norm(model),

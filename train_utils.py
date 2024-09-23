@@ -17,8 +17,12 @@ from subclasses import (
 )
 
 
+@torch.no_grad()
 def get_grad_norm(model: nn.Module):
-    return sum(p.grad.square().sum().item() for p in model.parameters() if p.grad is not None) ** 0.5
+    grad_norm_sq = sum(p.grad.square().sum() for p in model.parameters() if p.grad is not None)
+    if hasattr(grad_norm_sq, "full_tensor"):
+        grad_norm_sq = grad_norm_sq.full_tensor()
+    return grad_norm_sq.item() ** 0.5
 
 
 def get_optimizer(optim: str, model: nn.Module, lr: float, weight_decay: float, **kwargs):
