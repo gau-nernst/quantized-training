@@ -96,12 +96,15 @@ class BitNetTrainingLinearWeight(Tensor):
         return BitNetTrainingLinearWeight(data), all_gather_outputs
 
 
-def quantize_bitnet_weight(w: Tensor, eps: float = 1e-5) -> Tensor:
+def quantize_bitnet_weight(w: Tensor, eps: float = 1e-5, pack: bool = False) -> Tensor:
     dtype = w.dtype
     w = w.float()
     scale = w.abs().mean()  # tensor-wise abs-mean. FP32
     w = w / scale.clip(eps)
     w = w.round().clip(-1, 1).to(torch.int8)
+    if pack:
+        # NOTE: this is signed integer
+        w = (w[:, ::4] << 6) | ((w[:, 1::4] & 0b11) << 4) | ((w[:, 2::4] & 0b11) << 2) | (w[:, 3::4] & 0b11)
     return w, scale.to(dtype)
 
 
@@ -161,3 +164,51 @@ def convert_bitnet(module: nn.Module):
         for m in module.children():
             convert_bitnet(m)
     return module
+
+
+class BitNetPacked2bitLinearWeight(Tensor):
+    @staticmethod
+    @torch._dynamo.disable
+    def __new__(cls, int_data: Tensor, scale: Tensor, shape):
+        return Tensor._make_wrapper_subclass(
+            cls,
+            shape,
+            dtype=scale.dtype,
+            device=scale.device,
+        )
+
+    @torch._dynamo.disable
+    def __init__(self, int_data: Tensor, scale: Tensor, shape):
+        assert int_data.dtype is torch.int8
+        assert scale.shape == ()
+        self.int_data = int_data
+        self.scale = scale
+
+    def __tensor_flatten__(self):
+        return ["int_data", "scale"], [self.shape]
+
+    @classmethod
+    def __tensor_unflatten__(cls, tensor_data_dict, tensor_attributes, outer_size=None, outer_stride=None):
+        return cls(tensor_data_dict["int_data"], tensor_data_dict["scale"], *tensor_attributes)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(data={self.dequantize()})"
+
+    @classmethod
+    def from_float(cls, tensor: Tensor):
+        int_data, scale = quantize_bitnet_weight(tensor, pack=True)
+        return BitNetPacked2bitLinearWeight(int_data, scale, tensor.shape)
+
+    def dequantize(self, out_dtype=None):
+        # NOTE: this will perform sign extension correctly
+        # e.g. aa10bbcc -> 10bbcc00 -> 11111110
+        int_data = torch.stack(
+            [
+                self.int_data >> 6,
+                self.int_data << 2 >> 6,
+                self.int_data << 4 >> 6,
+                self.int_data << 6 >> 6,
+            ],
+            dim=-1,
+        ).view(self.shape)
+        return int_data * self.scale
