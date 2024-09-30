@@ -23,6 +23,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
 from data import get_dataset
+from hellaswag import evaluate_hellaswag
 from train_utils import LRSchedule, get_grad_norm, get_optimizer, print_model_stats, quantize_model
 
 
@@ -31,7 +32,7 @@ def get_loss(model: LlamaForCausalLM, tokens: Tensor, labels: Tensor):
     # last_hidden_state = last_hidden_state.view(-1, last_hidden_state.shape[-1])
     # logits = model.lm_head(last_hidden_state).float()
     # return F.cross_entropy(logits, labels.view(-1))
-    logits = model(tokens)[0].float()
+    logits = model(tokens).logits.float()
     return F.cross_entropy(logits.view(-1, logits.shape[-1]), labels.view(-1))
 
 
@@ -78,8 +79,9 @@ if __name__ == "__main__":
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
     parser.add_argument("--lr_schedule_kwargs", type=json.loads)
 
-    parser.add_argument("--val_ds", type=json.loads)
-    parser.add_argument("--val_interval", type=int, default=1000)
+    parser.add_argument("--hellaswag", action="store_true")
+    parser.add_argument("--hellaswag_tokenizer", default="llama2")
+    parser.add_argument("--hellaswag_interval", type=int, default=1000)
 
     parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project")
@@ -244,20 +246,13 @@ if __name__ == "__main__":
             elif is_master:  # single-device or DDP - only rank 0
                 torch.save(ckpt, args.save_dir / "last.pth")
 
-        # TODO: make this work with distributed
-        if args.val_interval > 0 and step % args.val_interval == 0 and args.val_ds is not None:
-            val_ds = get_dataset(seq_len=args.seq_len, eval=True, **args.val_ds)
-            val_dloader = DataLoader(val_ds, batch_size=bsize, num_workers=1)
+        if args.hellaswag and step % args.hellaswag_interval == 0:
+            if is_master:
+                acc = evaluate_hellaswag(model, args.hellaswag_tokenizer)
+                logger.log(dict(hellaswag_acc=acc), step=step)
 
-            total_loss = 0
-            n_batches = 0
-            model.eval()
-            with torch.no_grad():
-                for tokens, labels in tqdm(val_dloader, desc="Evaluating", dynamic_ncols=True):
-                    total_loss += torch.compile(get_loss)(model, tokens.cuda(), labels.cuda()).item()
-                    n_batches += 1
-            val_loss = total_loss / n_batches
-            logger.log(dict(val_loss=val_loss), step=step)
+            if is_dist:
+                dist.barrier()
             model.train()
 
     if is_master:
