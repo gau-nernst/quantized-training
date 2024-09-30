@@ -78,6 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=1e-2)
     parser.add_argument("--optim_kwargs", type=json.loads, default=dict())
     parser.add_argument("--lr_schedule_kwargs", type=json.loads)
+    parser.add_argument("--clip_grad_norm", type=int)
 
     parser.add_argument("--hellaswag", action="store_true")
     parser.add_argument("--hellaswag_tokenizer", default="llama2")
@@ -206,12 +207,19 @@ if __name__ == "__main__":
         if lr_schedule is not None:
             lr_schedule.set_lr(step, optim)
 
+        if args.clip_grad_norm is not None:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+            if is_fsdp:
+                grad_norm = grad_norm.full_tensor()
+        else:
+            grad_norm = None
+
         if step % log_interval == 0:
             if is_dist:
                 dist.all_reduce(loss, dist.ReduceOp.AVG)
             log_dict = dict(
                 loss=loss.item(),
-                grad_norm=get_grad_norm(model),
+                grad_norm=grad_norm if grad_norm is not None else get_grad_norm(model),
                 lr=optim.param_groups[0]["lr"],
             )
             if is_master:
