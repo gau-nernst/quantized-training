@@ -63,7 +63,7 @@ torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
 // this function is based on the following cutlass example
 // https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/ampere_gemm_universal_streamk_broadcast.cu
 // also with the help of emitted code from cutlass Python  
-torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
+torch::Tensor scaled_int4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
   int M = A.size(0);
   int K = A.size(1) * 2;
   int N = B.size(1);
@@ -170,5 +170,5 @@ torch::Tensor int4_mm_dequant(torch::Tensor A, torch::Tensor B, torch::Tensor ro
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("int4_mm", &int4_mm);
-  m.def("int4_mm_dequant", &int4_mm_dequant);
+  m.def("scaled_int4_mm", &scaled_int4_mm);
 }

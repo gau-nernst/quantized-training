@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from kernels import scaled_mm
+from kernels import scaled_int8_mm
 
 aten = torch.ops.aten
 
@@ -154,7 +154,7 @@ class _Int8Linear(torch.autograd.Function):
 
             # optimization opportuntiy
             # we can fuse activation quantization into matmul too
-            out = scaled_mm(input_int_data, weight.int_data.T, input_scale, weight.scale)
+            out = scaled_int8_mm(input_int_data, weight.int_data.T, input_scale, weight.scale)
             out = out.view(*batch_dims, -1)
 
         out = out + bias if bias is not None else out

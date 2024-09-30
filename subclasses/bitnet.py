@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.utils._pytree as pytree
 from torch import Tensor, nn
 
-from kernels import scaled_mm
+from kernels import scaled_int8_mm
 
 from .int8 import quantize_int8
 
@@ -78,9 +78,16 @@ class BitNetTrainingLinearWeight(Tensor):
             # return new unwrapped object
             return out
 
-    def fsdp_pre_all_gather(self, mesh):
-        data = BitNetPacked2bitLinearWeight.from_float(self._data, all_reduce=True)
-        return (data.int_data,), (data.scale,)
+    # new signature https://github.com/pytorch/pytorch/pull/136129
+    # we need default None for module and mp_policy so this method still works with PyTorch 2.4 and 2.5
+    def fsdp_pre_all_gather(self, mesh, module=None, mp_policy=None):
+        scale = get_bitnet_scale(self._data)
+        dist.all_reduce(scale, op=dist.ReduceOp.AVG)
+
+        # NOTE: scale is in FP32
+        data_i8 = quantize_bitnet_weight(self._data, scale)
+        data_i2 = _pack_i2_in_i8(data_i8)
+        return (data_i2,), (scale,)
 
     def fsdp_post_all_gather(
         self,
@@ -90,26 +97,25 @@ class BitNetTrainingLinearWeight(Tensor):
         *,
         out: Optional[Tensor] = None,
     ):
-        (int_data,) = all_gather_outputs
+        (data_i2,) = all_gather_outputs
         (scale,) = metadata
+        scale = scale.to(param_dtype)
         if out is not None:
             assert isinstance(out, BitNetPacked2bitLinearWeight)
             out.scale = scale
             return
-        return BitNetPacked2bitLinearWeight(int_data, scale), all_gather_outputs
+        return BitNetPacked2bitLinearWeight(data_i2, scale), all_gather_outputs
 
 
-def quantize_bitnet_weight(w: Tensor, eps: float = 1e-5, all_reduce: bool = False) -> Tensor:
-    dtype = w.dtype
-    w = w.float()
-    scale = w.abs().mean()  # tensor-wise abs-mean. FP32
+def get_bitnet_scale(x: Tensor):
+    "Tensor-wise abs-mean. Always return FP32."
+    return x.float().abs().mean()
 
-    if all_reduce and dist.is_initialized():
-        dist.all_reduce(scale, op=dist.ReduceOp.AVG)
 
-    w = w / scale.clip(eps)
+def quantize_bitnet_weight(w: Tensor, scale: Tensor, eps: float = 1e-5) -> Tensor:
+    w = w.float() / scale.clip(eps)
     w = w.round().clip(-1, 1).to(torch.int8)
-    return w, scale.to(dtype)
+    return w
 
 
 class _BitNetTrainingLinear(torch.autograd.Function):
@@ -119,13 +125,19 @@ class _BitNetTrainingLinear(torch.autograd.Function):
         input = input.view(-1, weight.shape[1])
 
         # https://github.com/microsoft/unilm/blob/master/bitnet/The-Era-of-1-bit-LLMs__Training_Tips_Code_FAQ.pdf
-        # Figure 4
+        # Figure 3
         input_i8, row_scale = quantize_int8(input, eps=1e-5)
-        weight_i8, tensor_scale = quantize_bitnet_weight(weight._data)
-        ctx.save_for_backward(input, weight_i8, tensor_scale)
+
+        # NOTE: use FP32 scale for weight quantization, but cast scale to possibly lower precision
+        # for matmul and backward
+        tensor_scale = get_bitnet_scale(weight._data)
+        weight_i8 = quantize_bitnet_weight(weight._data, tensor_scale)
+        tensor_scale = tensor_scale.to(weight.dtype)
+
+        ctx.save_for_backward(input_i8, row_scale, weight_i8, tensor_scale)
 
         # use int8 tensor cores
-        out = scaled_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
+        out = scaled_int8_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
         out = out.view(*batch_dims, weight.shape[0])
 
         out = out + bias if bias is not None else out
@@ -133,22 +145,22 @@ class _BitNetTrainingLinear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        input, weight_i8, tensor_scale = ctx.saved_tensors
+        input_i8, row_scale, weight_i8, tensor_scale = ctx.saved_tensors
         grad_input = grad_weight = grad_bias = None
 
         batch_dims = grad_output.shape[:-1]
         grad_output = grad_output.view(-1, weight_i8.shape[0])
-        input = input.view(-1, weight_i8.shape[1])
 
         # NOTE: we can potentially speedup training by also quantizing the backward pass
         # to use INT8 tensor cores
         if ctx.needs_input_grad[0]:
             # mixed mm
-            grad_input = scaled_mm(grad_output, weight_i8, tensor_scale, None)
+            grad_input = (grad_output @ weight_i8.to(grad_output.dtype)) * tensor_scale
             grad_input = grad_input.view(*batch_dims, weight_i8.shape[1])
 
         if ctx.needs_input_grad[1]:
-            grad_weight = grad_output.T @ input
+            # NOTE: we use quantized activation for this calculation
+            grad_weight = grad_output.T @ (input_i8 * row_scale.view(-1, 1))
 
         if ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(0)
@@ -170,14 +182,21 @@ def convert_bitnet(module: nn.Module):
     return module
 
 
-def pack_i2_to_i8(x: Tensor):
-    # NOTE: this is signed integer, so we have to mask before bit-shift
-    return (x[:, ::4] << 6) | ((x[:, 1::4] & 0b11) << 4) | ((x[:, 2::4] & 0b11) << 2) | (x[:, 3::4] & 0b11)
+def _pack_i2_in_i8(x: Tensor):
+    # perform packing: [xxxx xxaa, xxxx xxxbb, xxxx xxcc, xxxx xxdd] -> [aabb ccdd]
+    # for each value, xxxx can be either all 0s or all 1s because these are signed numbers.
+    # thus, we have to mask out the 2 least significant bits (right-most) before bit-shift.
+    # e.g. 1111 1111 (value=-1) -> 0000 0011 -> 0011 0000
+
+    x0 = x[:, ::4] << 6  # don't need to mask this number because we shift it to the left-most
+    x1 = (x[:, 1::4] & 0b11) << 4
+    x2 = (x[:, 2::4] & 0b11) << 2
+    x3 = x[:, 3::4] & 0b11
+    return x0 | x1 | x2 | x3
 
 
-def unpack_i8_to_i2(x: Tensor):
-    # NOTE: this is signed integer, so left-shift then right-shift
-    # will perform sign extension correctly
+def _unpack_i2_in_i8(x: Tensor):
+    # NOTE: this is signed integer, so left-shift then right-shift will perform sign extension correctly
     # e.g. aa10bbcc -> 10bbcc00 -> 11111110
     return torch.stack([x >> 6, x << 2 >> 6, x << 4 >> 6, x << 6 >> 6], dim=-1).view(x.shape[0], -1)
 
@@ -214,14 +233,11 @@ class BitNetPacked2bitLinearWeight(Tensor):
     def __repr__(self):
         return f"{self.__class__.__name__}(data={self.dequantize()})"
 
-    @classmethod
-    def from_float(cls, tensor: Tensor, *, eps: float = 1e-5, all_reduce: bool = False):
-        int_data, scale = quantize_bitnet_weight(tensor, eps=eps, all_reduce=all_reduce)
-        int_data = pack_i2_to_i8(int_data)
-        return BitNetPacked2bitLinearWeight(int_data, scale)
-
     def dequantize(self, out_dtype=None):
-        return unpack_i8_to_i2(self.int_data) * self.scale
+        out = _unpack_i2_in_i8(self.int_data) * self.scale
+        if out_dtype is not None:
+            out = out.to(out_dtype)
+        return out
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
@@ -254,15 +270,16 @@ class _BitNetPacked2bitLinear(torch.autograd.Function):
         input = input.view(-1, weight.shape[1])
 
         # https://github.com/microsoft/unilm/blob/master/bitnet/The-Era-of-1-bit-LLMs__Training_Tips_Code_FAQ.pdf
-        # Figure 4
+        # Figure 3
         input_i8, row_scale = quantize_int8(input, eps=1e-5)
         weight_i2, tensor_scale = weight.int_data, weight.scale
-        ctx.save_for_backward(input, weight_i2, tensor_scale)
+
+        ctx.save_for_backward(input_i8, row_scale, weight_i2, tensor_scale)
 
         # use int8 tensor cores
         # NOTE: is doing dequant inside matmul faster when M is large?
-        weight_i8 = unpack_i8_to_i2(weight_i2)
-        out = scaled_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
+        weight_i8 = _unpack_i2_in_i8(weight_i2)
+        out = scaled_int8_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
         out = out.view(*batch_dims, weight.shape[0])
 
         out = out + bias if bias is not None else out
@@ -270,23 +287,23 @@ class _BitNetPacked2bitLinear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        input, weight_i2, tensor_scale = ctx.saved_tensors
-        weight_i8 = unpack_i8_to_i2(weight_i2)
+        input_i8, row_scale, weight_i2, tensor_scale = ctx.saved_tensors
+        weight_i8 = _unpack_i2_in_i8(weight_i2)
         grad_input = grad_weight = grad_bias = None
 
         batch_dims = grad_output.shape[:-1]
         grad_output = grad_output.view(-1, weight_i8.shape[0])
-        input = input.view(-1, weight_i8.shape[1])
 
         # NOTE: we can potentially speedup training by also quantizing the backward pass
         # to use INT8 tensor cores
         if ctx.needs_input_grad[0]:
             # mixed mm
-            grad_input = scaled_mm(grad_output, weight_i8, tensor_scale, None)
+            grad_input = (grad_output @ weight_i8.to(grad_output.dtype)) * tensor_scale
             grad_input = grad_input.view(*batch_dims, weight_i8.shape[1])
 
         if ctx.needs_input_grad[1]:
-            grad_weight = grad_output.T @ input
+            # NOTE: we use quantized activation for this calculation
+            grad_weight = grad_output.T @ (input_i8 * row_scale.view(-1, 1))
 
         if ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(0)
