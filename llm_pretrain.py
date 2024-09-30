@@ -96,6 +96,8 @@ if __name__ == "__main__":
     is_fsdp = is_dist and not args.ddp
     is_master = rank == 0
     world_size = 1
+    if is_fsdp:
+        assert not args.hellaswag, "Validation with FSDP is currently not supported"
     if is_dist:
         dist.init_process_group(backend="nccl")
         local_rank = int(os.environ["LOCAL_RANK"])

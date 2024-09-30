@@ -20,6 +20,7 @@ def preprocess(text: str):
     return text
 
 
+@torch.no_grad()
 def predict(model: LlamaForCausalLM, data: Tensor) -> Tensor:
     N, n_choices, seq_len = data.shape
 
@@ -29,15 +30,18 @@ def predict(model: LlamaForCausalLM, data: Tensor) -> Tensor:
     labels = data[..., 1:]  # (N, n_choices, seq_len - 1)
     loss = F.cross_entropy(logits.view(-1, logits.shape[-1]), labels.flatten(), reduction="none")
 
-    loss = loss.reshape_as(labels).sum(-1) / (labels != -100).sum(-1)
+    loss = loss.reshape(N, n_choices, seq_len - 1).sum(-1)
     preds = loss.argmin(-1)
     return preds
 
 
+# NOTE: this probably will not agree with lm_eval results.
+# it's mainly to avoid recompiles for validation during training.
+@torch.no_grad()
 def evaluate_hellaswag(model: LlamaForCausalLM, tokenizer: str, split: str = "validation", pbar: bool = True) -> None:
-    # using Llama2 tokenizer, max 170 toks -> always pad to 256 to avoid re-compile
+    # using Llama2 tokenizer, max 170 toks
     ds = load_dataset("Rowan/hellaswag", split=split)
-    tokens = torch.zeros(len(ds), 4, 257, dtype=torch.int64)
+    tokens = torch.zeros(len(ds), 4, 193, dtype=torch.int64)
     tokenizer = get_tokenizer(tokenizer)
 
     # TODO: cache this
@@ -45,10 +49,11 @@ def evaluate_hellaswag(model: LlamaForCausalLM, tokenizer: str, split: str = "va
         ctx = f"{row['activity_label']}: {row['ctx_a']} {row['ctx_b'].capitalize()}"
         for ending_idx, ending in enumerate(row["endings"]):
             toks = tokenizer(preprocess(f"{ctx} {ending}"))
-            assert len(toks) <= 256
+            assert len(toks) <= tokens.shape[-1]
             tokens[row_idx, ending_idx, : len(toks)] = torch.tensor(toks)
             tokens[row_idx, ending_idx, len(toks) :] = -100
 
+    # TODO: distributed inference
     n_correct = 0
     bsize = 2
     all_labels = torch.tensor([int(x) for x in ds["label"]])
@@ -59,6 +64,6 @@ def evaluate_hellaswag(model: LlamaForCausalLM, tokenizer: str, split: str = "va
         labels = all_labels[i:end_idx]
 
         preds = torch.compile(predict)(model, data.cuda())
-        n_correct += (preds.cpu() == labels).sum()
+        n_correct += (preds.cpu() == labels).sum().item()
 
     return n_correct / len(ds)
