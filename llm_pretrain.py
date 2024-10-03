@@ -59,6 +59,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_id", default="mini_llamas/Llama-2-470m")
     parser.add_argument("--pretrained", action="store_true")
+    parser.add_argument("--freeze_embedding_layer", action="store_true")
 
     parser.add_argument("--quantize")
     parser.add_argument("--quantize_kwargs", type=json.loads, default=dict())
@@ -122,7 +123,10 @@ if __name__ == "__main__":
     )
     if args.pretrained:
         model = LlamaForCausalLM.from_pretrained(**kwargs)
+        if args.freeze_embedding_layer:
+            model.get_input_embeddings().requires_grad_(False)
     else:
+        assert not args.freeze_embedding_layer
         model = LlamaForCausalLM(LlamaConfig.from_pretrained(**kwargs))
     if args.activation_checkpointing:
         model.gradient_checkpointing_enable()

@@ -58,7 +58,7 @@ def evaluate_hellaswag(model: LlamaForCausalLM, tokenizer: str, split: str = "va
     bsize = 2
     all_labels = torch.tensor([int(x) for x in ds["label"]])
     model.eval()
-    for i in tqdm(range(0, len(ds), bsize), desc=f"Evaluate hellaswag {split}", disable=not pbar):
+    for i in tqdm(range(0, len(ds), bsize), desc=f"Evaluate hellaswag {split}", disable=not pbar, dynamic_ncols=True):
         end_idx = min(i + bsize, len(ds))
         data = tokens[i:end_idx]
         labels = all_labels[i:end_idx]
