@@ -8,6 +8,7 @@ import torchao.prototype.low_bit_optim as low_bit_optim
 from torch import Tensor, nn
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRMSNorm
 
+import other_optim
 from subclasses import (
     Int8QTConfig,
     MixedPrecisionConfig,
@@ -26,7 +27,7 @@ def get_grad_norm(model: nn.Module):
 
 
 def get_optimizer(optim: str, model: nn.Module, lr: float, weight_decay: float, **kwargs):
-    allowed = dict(torch=torch, low_bit_optim=low_bit_optim, bnb=bnb, partial=partial)
+    allowed = dict(torch=torch, low_bit_optim=low_bit_optim, bnb=bnb, other_optim=other_optim, partial=partial)
     optim_cls = eval(optim, allowed)
     return optim_cls(model.parameters(), lr=lr, weight_decay=weight_decay, **kwargs)
 
