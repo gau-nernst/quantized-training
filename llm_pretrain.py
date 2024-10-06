@@ -36,25 +36,6 @@ def get_loss(model: LlamaForCausalLM, tokens: Tensor, labels: Tensor):
     return F.cross_entropy(logits.view(-1, logits.shape[-1]), labels.view(-1))
 
 
-# maintain FP32 weight. cast weight to BF16 to simulate inference/FSDP mixed-precision training
-# instead of casting output to BF16.
-class RMSNormFp32(nn.RMSNorm):
-    def forward(self, x: Tensor):
-        assert self.weight.dtype is torch.float32
-        return F.rms_norm(x, self.normalized_shape, self.weight.to(x.dtype), self.eps)
-
-    @staticmethod
-    def convert_llama_rmsnorm(module: nn.Module):
-        if isinstance(module, LlamaRMSNorm):
-            m = RMSNormFp32(module.weight.shape, module.variance_epsilon, device=module.weight.device)
-            m.weight.data.copy_(module.weight)
-            return m
-
-        for name, child in module.named_children():
-            setattr(module, name, RMSNormFp32.convert_llama_rmsnorm(child))
-        return module
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_id", default="mini_llamas/Llama-2-470m")
@@ -142,11 +123,6 @@ if __name__ == "__main__":
     if args.quantize_lm_head:
         quantize_model(model.lm_head, args.quantize, **args.quantize_kwargs)
 
-    # do this after quantization because BitNet will add more RMSNorm layers
-    # this will force RMSNorm weights to be in FP32, since it might be underflow
-    # during weight update if it is BF16.
-    RMSNormFp32.convert_llama_rmsnorm(model)
-
     if is_ddp:
         # not compatible with activation checkpointing https://github.com/pytorch/pytorch/issues/104674
         # gradients all-reduce won't overlap with backward. however, the speedup thanks to full
@@ -157,11 +133,6 @@ if __name__ == "__main__":
 
     elif is_fsdp:
         # TODO: reduce in FP32?
-        # need to fully_shard RMSNorm separately since it's FP32
-        # TODO: add optimization from awgu https://github.com/awgu/torchtrain/commits/fsdp_rmsnorm/
-        for module in model.modules():
-            if isinstance(module, RMSNormFp32):
-                fully_shard(module)
         for layer in model.model.layers:
             fully_shard(layer)
             layer.compile()  # FSDP is more performant when compiling this way
