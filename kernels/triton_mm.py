@@ -5,9 +5,9 @@ from torch import Tensor
 
 from ._lib import lib, lib_ops
 
-# https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html
 # (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps)
 configs = [
+    # https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html
     (128, 256, 64, 3, 8),
     (64, 256, 32, 4, 4),
     (128, 128, 32, 4, 4),
