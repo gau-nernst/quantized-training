@@ -17,7 +17,7 @@ import wandb
 from torch import Tensor, nn
 from torch.distributed._composable.fsdp import fully_shard
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
@@ -49,7 +49,6 @@ if __name__ == "__main__":
     parser.add_argument("--ddp", action="store_true")
 
     parser.add_argument("--train_ds", type=json.loads, required=True)
-    parser.add_argument("--n_workers", type=int, default=1)
     parser.add_argument("--n_steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seq_len", type=int, default=2048)
@@ -66,6 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--hellaswag_tokenizer", default="llama2")
     parser.add_argument("--hellaswag_interval", type=int, default=1000)
 
+    parser.add_argument("--resume")
     parser.add_argument("--ckpt_interval", type=int, default=1000)
     parser.add_argument("--project")
     parser.add_argument("--run_name")
@@ -147,9 +147,9 @@ if __name__ == "__main__":
     else:
         lr_schedule = None
 
-    ds = get_dataset(seq_len=args.seq_len, eval=False, **args.train_ds)
+    ds = get_dataset(seq_len=args.seq_len, eval=False, seed=args.seed, **args.train_ds)
     bsize = args.batch_size // (args.gradient_accumulation * world_size)
-    dloader = iter(DataLoader(ds, batch_size=bsize, num_workers=args.n_workers, pin_memory=True))
+    dloader = StatefulDataLoader(ds, batch_size=bsize, num_workers=1, pin_memory=True)
 
     args.save_dir = Path("runs/llm_pretrain") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.run_name}"
     if is_master:
@@ -163,8 +163,16 @@ if __name__ == "__main__":
         )
 
     step = 0
+    if args.resume is not None:
+        # TODO: test with DDP. make it work with FSDP
+        ckpt = torch.load(args.resume, map_location="cpu")
+        model.load_state_dict(ckpt["model"])
+        optim.load_state_dict(ckpt["optim"])
+        dloader.load_state_dict(ckpt["dloader"])
+        step = ckpt["step"]
+
     log_interval = 50
-    pbar = tqdm(total=args.n_steps, dynamic_ncols=True, disable=is_master == False)
+    pbar = tqdm(total=args.n_steps, initial=step, dynamic_ncols=True, disable=is_master == False)
     model.train()
     loss_fn = get_loss if is_fsdp else torch.compile(get_loss)
     time0 = time.time()
@@ -172,10 +180,11 @@ if __name__ == "__main__":
         torch._inductor.config.triton.unique_kernel_names = True
         prof = torch.profiler.profile()
 
+    dloader_iter = iter(dloader)
     while step < args.n_steps:
         # TODO: disable gradient all-reduce for non-last micro-steps
         for _ in range(args.gradient_accumulation):
-            tokens, labels = next(dloader)
+            tokens, labels = next(dloader_iter)
             loss = loss_fn(model, tokens.cuda(), labels.cuda())
             loss.backward()
 
@@ -224,6 +233,7 @@ if __name__ == "__main__":
             ckpt = dict(
                 model=model.state_dict(),
                 optim=optim.state_dict(),
+                dloader=dloader.state_dict(),
                 step=step,
             )
             if is_fsdp:  # FSDP saves on all ranks

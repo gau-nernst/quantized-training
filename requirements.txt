@@ -5,5 +5,6 @@ wandb
 lm-eval
 torchao
 sentencepiece
-tiktoken
+tiktoken[blobfile]
 bitsandbytes
+torchdata
