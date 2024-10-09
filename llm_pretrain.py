@@ -22,7 +22,7 @@ from tqdm import tqdm
 from transformers import LlamaConfig, LlamaForCausalLM
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
-from data import get_dataset
+from data import ShuffleDataset, get_dataset
 from hellaswag import evaluate_hellaswag
 from train_utils import LRSchedule, get_grad_norm, get_optimizer, print_model_stats, quantize_model
 
@@ -33,7 +33,7 @@ def get_loss(model: LlamaForCausalLM, tokens: Tensor, labels: Tensor):
     # logits = model.lm_head(last_hidden_state).float()
     # return F.cross_entropy(logits, labels.view(-1))
     logits = model(tokens).logits.float()
-    return F.cross_entropy(logits.view(-1, logits.shape[-1]), labels.view(-1))
+    return F.cross_entropy(logits.view(-1, logits.shape[-1]), labels.long().view(-1))
 
 
 if __name__ == "__main__":
@@ -149,6 +149,7 @@ if __name__ == "__main__":
 
     ds = get_dataset(seq_len=args.seq_len, eval=False, seed=args.seed, **args.train_ds)
     bsize = args.batch_size // (args.gradient_accumulation * world_size)
+    ds = ShuffleDataset(ds, buffer_size=max(bsize * 4, 1000), seed=args.seed)
     dloader = StatefulDataLoader(ds, batch_size=bsize, num_workers=1, pin_memory=True)
 
     args.save_dir = Path("runs/llm_pretrain") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.run_name}"

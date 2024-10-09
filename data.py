@@ -68,7 +68,14 @@ class TokenDataset(IterableDataset):
 # - HuggingFaceFW/fineweb-edu
 class HFTextDataset(IterableDataset):
     def __init__(
-        self, dataset: str, subset: str, split: str, tokenizer: str, seq_len: int, eval: bool, seed: int = 2024
+        self,
+        dataset: str,
+        subset: str,
+        split: str,
+        tokenizer: str,
+        seq_len: int,
+        eval: bool,
+        seed: int = 2024,
     ) -> None:
         self.ds = load_dataset(dataset, name=subset, split=split, streaming=True)
         self.tokenizer = get_tokenizer(tokenizer)
@@ -84,11 +91,8 @@ class HFTextDataset(IterableDataset):
                 rank=dist.get_rank(),
                 world_size=dist.get_world_size(),
             )
-
-        self._generator = torch.Generator().manual_seed(seed)
         self._epoch = 0
-        self._token_buffer = []
-        self._sample_buffer = []
+        self._buffer: list[int] = []
 
     def __iter__(self):
         # does HF datasets split samples among data workers automatically?
@@ -96,57 +100,36 @@ class HFTextDataset(IterableDataset):
         if worker_info is not None:
             assert worker_info.num_workers == 1
 
-        # clear _sample_buffer if resume
-        yield from self._iter_samples()
-
         SAMPLE_LEN = self.seq_len + 1
-        NUM_SAMPLES = int(1e6 / SAMPLE_LEN)  # shuffle 1M tokens
-
         while True:
             self.ds.set_epoch(self._epoch)
-
             for sample in self.ds:
-                # add new data to token buffer
-                self._token_buffer.extend(self.tokenizer(sample["text"]))
+                new_tokens = self.tokenizer(sample["text"], add_bos=True, add_eos=True)
+                self._buffer.extend(new_tokens)
 
-                # transfer token buffer to sample buffer
-                while len(self._token_buffer) >= SAMPLE_LEN:
-                    self._sample_buffer.append(self._token_buffer[:SAMPLE_LEN])
-                    self._token_buffer = self._token_buffer[SAMPLE_LEN:]
-
-                # yield sample buffer if sufficient size
-                if len(self._sample_buffer) >= NUM_SAMPLES:
-                    indices = torch.randperm(len(self._sample_buffer), generator=self._generator)
-                    self._sample_buffer = [self._sample_buffer[i] for i in indices]
-                    yield from self._iter_samples()
+                while len(self._buffer) >= SAMPLE_LEN:
+                    sample = torch.tensor(self._buffer[:SAMPLE_LEN], dtype=torch.int32)
+                    self._buffer = self._buffer[SAMPLE_LEN:]
+                    yield sample[:-1], sample[1:]
 
             self._epoch += 1
             if self.eval:
                 break
 
-    def _iter_samples(self):
-        while self._sample_buffer:
-            sample = torch.tensor(self._sample_buffer.pop(), dtype=torch.int64)
-            yield sample[:-1], sample[1:]
-
     def state_dict(self):
         ds_state_dict = self.ds.state_dict()
-        if ds_state_dict["shard_example_idx"] > 0:
+        if not self.eval and ds_state_dict["shard_example_idx"] > 0:
             ds_state_dict["shard_example_idx"] -= 1  # compensate for prefetch
         return dict(
             ds=ds_state_dict,
-            _generator=self._generator.get_state(),
             _epoch=self._epoch,
-            _token_buffer=self._token_buffer,
-            _sample_buffer=self._sample_buffer,
+            _buffer=list(self._buffer),  # make a copy
         )
 
     def load_state_dict(self, state_dict: dict):
         self.ds.load_state_dict(state_dict["ds"])
-        self._generator.set_state(state_dict["_generator"])
         self._epoch = state_dict["_epoch"]
-        self._token_buffer = state_dict["_token_buffer"]
-        self._sample_buffer = state_dict["_sample_buffer"]
+        self._buffer = list(state_dict["_buffer"])  # make a copy
 
 
 # must have "jpg" and "cls" keys, typically webdataset format e.g.
@@ -177,3 +160,51 @@ class HFImageDataset(IterableDataset):
 
             if self.eval:
                 break
+
+
+class ShuffleDataset(IterableDataset):
+    def __init__(self, ds: IterableDataset, buffer_size: int = 1000, seed: int = 2024) -> None:
+        self.ds = ds
+        self.buffer_size = buffer_size
+
+        self._generator = torch.Generator().manual_seed(seed)
+        self._buffer1 = []
+        self._buffer2 = []
+
+    def __iter__(self):
+        for sample in self.ds:
+            # buffer2 is filled. once buffer2 is full, we shuffle and swap it with buffer1.
+            # buffer2 should now be empty and buffer1 is full. we yield 1 sample from buffer1.
+            # in subsequent iterations, we add 1 item to buffer2 and remove 1 item from buffer1,
+            # thus maintaining the invariance that len(buffer1) + len(buffer2) = buffer_size - 1.
+            self._buffer2.append(sample)
+            if len(self._buffer2) == self.buffer_size:
+                self._buffer2 = self._shuffle(self._buffer2)
+                self._buffer1, self._buffer2 = self._buffer2, self._buffer1
+
+            if len(self._buffer1):
+                yield self._buffer1.pop()
+
+        while len(self._buffer1):
+            yield self._buffer1.pop()
+        self._buffer2 = self._shuffle(self._buffer2)
+        while len(self._buffer2):
+            yield self._buffer2.pop()
+
+    def _shuffle(self, buffer: list):
+        indices = torch.randperm(len(buffer), generator=self._generator)
+        return [buffer[idx] for idx in indices]
+
+    def state_dict(self):
+        return dict(
+            ds=self.ds.state_dict(),
+            _generator=self._generator.get_state(),
+            _buffer1=list(self._buffer1),  # shallow copy
+            _buffer2=list(self._buffer2),
+        )
+
+    def load_state_dict(self, state_dict: dict):
+        self.ds.load_state_dict(state_dict["ds"])
+        self._generator.set_state(state_dict["_generator"])
+        self._buffer1 = list(state_dict["_buffer1"])  # shallow copy
+        self._buffer2 = list(state_dict["_buffer2"])
