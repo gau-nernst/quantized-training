@@ -150,7 +150,13 @@ if __name__ == "__main__":
     ds = get_dataset(seq_len=args.seq_len, eval=False, seed=args.seed, **args.train_ds)
     bsize = args.batch_size // (args.gradient_accumulation * world_size)
     ds = ShuffleDataset(ds, buffer_size=max(bsize * 4, 1000), seed=args.seed)
-    dloader = StatefulDataLoader(ds, batch_size=bsize, num_workers=1, pin_memory=True)
+    dloader = StatefulDataLoader(
+        ds,
+        batch_size=bsize,
+        num_workers=1,
+        pin_memory=True,
+        snapshot_every_n_steps=args.ckpt_interval,
+    )
 
     args.save_dir = Path("runs/llm_pretrain") / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.run_name}"
     if is_master:
