@@ -1,7 +1,11 @@
+import logging
 import math
+import tarfile
 from pathlib import Path
 
+import huggingface_hub
 import numpy as np
+import requests
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
@@ -11,6 +15,8 @@ from torch.utils.data import IterableDataset, get_worker_info
 
 from llama_tokenizers import get_tokenizer
 
+logger = logging.getLogger(__name__)
+
 
 def get_dataset(type: str, eval: bool, **kwargs):
     ds_cls = dict(
@@ -19,6 +25,13 @@ def get_dataset(type: str, eval: bool, **kwargs):
         hf_image=HFImageDataset,
     )[type]
     return ds_cls(eval=eval, **kwargs)
+
+
+def _get_dist_info():
+    if dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size()
+    else:
+        return 0, 1
 
 
 # datasets produced by tokenize_data.py
@@ -85,12 +98,9 @@ class HFTextDataset(IterableDataset):
         self.ds = self.ds.select_columns("text")
         if not eval:  # only shuffle shards
             self.ds = self.ds.shuffle(seed=seed, buffer_size=1)
-        if dist.is_initialized():
-            self.ds = split_dataset_by_node(
-                dataset=self.ds,
-                rank=dist.get_rank(),
-                world_size=dist.get_world_size(),
-            )
+        rank, world_size = _get_dist_info()
+        if world_size > 1:
+            self.ds = split_dataset_by_node(self.ds, rank, world_size)
         self._epoch = 0
         self._buffer: list[int] = []
 
@@ -160,6 +170,83 @@ class HFImageDataset(IterableDataset):
 
             if self.eval:
                 break
+
+
+class WebDataset(IterableDataset):
+    def __init__(self, urls: list[str], columns: list[str] | None = None, eval: bool = True, seed: int = 2024) -> None:
+        self.urls = urls
+        self.columns = tuple(columns) if columns is not None else None  # shallow copy
+        self.eval = eval
+
+        self._generator = torch.Generator().manual_seed(seed)
+        self._sess = requests.Session()
+
+    @staticmethod
+    def from_hf(repo_id: str, columns: list[str]) -> "WebDataset":
+        fs = huggingface_hub.HfFileSystem()
+        urls = []
+        for path in fs.glob(f"hf://datasets/{repo_id}/**/*.tar"):
+            hf_file = fs.resolve_path(path)
+            url = huggingface_hub.hf_hub_url(repo_id, hf_file.path_in_repo, repo_type="dataset")
+            urls.append(url)
+        urls.sort()
+        return WebDataset(urls, columns)
+
+    @staticmethod
+    def _get_headers(url: str) -> dict[str, str]:
+        headers = dict()
+        if url.startswith("https://huggingface.co/datasets"):
+            token = huggingface_hub.utils.get_token()
+            if token is not None:
+                headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _url_iter(self):
+        while True:
+            urls = self.urls
+            if not self.eval:
+                indices = torch.randperm(len(urls), generator=self._generator)
+                urls = [urls[idx] for idx in indices]
+
+            for url in urls:
+                yield url
+            if self.eval:
+                break
+
+    def __iter__(self):
+        rank, world_size = _get_dist_info()
+
+        # if all distributed processes use the same RNG seed, the infinite url sequence should be exactly identical.
+        # thus, to evenly distribute them among processes, each process simply takes 1 shard every world_size.
+        for shard_idx, url in enumerate(self._url_iter()):
+            if shard_idx % world_size != rank:
+                continue
+
+            try:
+                resp = self._sess.get(
+                    url,
+                    headers=self._get_headers(url),
+                    timeout=30,
+                    stream=True,
+                )
+                tar = tarfile.open(fileobj=resp.raw, mode="r|")
+
+                sample = dict()
+                for tarinfo in tar:
+                    key, ext = tarinfo.name.rsplit(".", 1)
+                    if "__key__" in sample:
+                        if sample["__key__"] != key:
+                            yield sample
+                            sample = dict(__key__=key)
+                    else:
+                        sample["__key__"] = key
+                    if self.columns is None or ext in self.columns:
+                        sample[ext] = tar.extractfile(tarinfo).read()
+                yield sample
+
+            except Exception as e:
+                # when failure, we simply continue with the next shard
+                logger.exception(f"Exception while reading {url=}", e)
 
 
 class ShuffleDataset(IterableDataset):
