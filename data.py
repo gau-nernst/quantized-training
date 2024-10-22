@@ -173,9 +173,17 @@ class HFImageDataset(IterableDataset):
 
 
 class WebDataset(IterableDataset):
-    def __init__(self, urls: list[str], columns: list[str] | None = None, eval: bool = True, seed: int = 2024) -> None:
+    def __init__(
+        self,
+        urls: list[str],
+        columns: list[str] | None = None,
+        transform: dict | None = None,
+        eval: bool = True,
+        seed: int = 2024,
+    ) -> None:
         self.urls = urls
         self.columns = tuple(columns) if columns is not None else None  # shallow copy
+        self.transform = dict(transform) if transform is not None else None
         self.eval = eval
 
         self._generator = torch.Generator().manual_seed(seed)
@@ -236,6 +244,10 @@ class WebDataset(IterableDataset):
                     key, ext = tarinfo.name.rsplit(".", 1)
                     if "__key__" in sample:
                         if sample["__key__"] != key:
+                            if self.transform is not None:
+                                for k, v in sample.items():
+                                    if k in self.transform:
+                                        sample[k] = self.transform[k](v)
                             yield sample
                             sample = dict(__key__=key)
                     else:
@@ -283,6 +295,9 @@ class ShuffleDataset(IterableDataset):
         return [buffer[idx] for idx in indices]
 
     def state_dict(self):
+        # instead of saving (and loading) the buffer, which can be huge, we can save the current index in the buffer
+        # instead. we will then save the state of inner dataset when we swap the buffer (i.e. save every buffer_size
+        # samples). then we can efficiently rewind the dataset.
         return dict(
             ds=self.ds.state_dict(),
             _generator=self._generator.get_state(),
