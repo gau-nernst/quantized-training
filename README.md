@@ -84,6 +84,12 @@ Row-major x Column-major (`A @ B.T`)
 | Triton INT8                    |   1.21 |   1.96 |   1.72 |
 | Cutlass INT4                   |   1.15 |   2.33 |   2.96 |
 | Triton FP16 w/ FP16 accumulate |   0.92 |   1.26 |   0.98 |
+| **H100 NVL**
+| CuBLAS INT8                    |   1.57 |   1.01 |   1.37 |
+| Triton INT8                    |   1.56 |   1.41 |   1.75 |
+| Cutlass INT4                   |   0.08 |   0.08 |   0.07 |
+| Triton FP8                     |   0.67 |   0.28 |   0.28 |
+| Triton FP16 w/ FP16 accumulate |   1.19 |   0.67 |   0.69 |
 
 Row-major x Row-major (`A @ B`)
 
