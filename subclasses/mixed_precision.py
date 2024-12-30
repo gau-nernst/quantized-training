@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torch.utils._pytree as pytree
 from torch import Tensor, nn
 
-from kernels import scaled_int4_mm, scaled_int8_mm
+from kernels import scaled_int4_mm, scaled_mm
 
 from .int8 import quantize_int8
 
@@ -100,7 +100,7 @@ class MixedPrecisionLinearWeight(Tensor):
 def _dynamic_int8_mm(A: Tensor, B: Tensor, sr: bool) -> Tensor:
     A_i8, row_scale = quantize_int8(A, sr, dim=1)
     B_t_i8, col_scale = quantize_int8(B.T, sr, dim=1)
-    return scaled_int8_mm(
+    return scaled_mm(
         A_i8.contiguous(),
         B_t_i8.contiguous().T,
         row_scale.contiguous(),

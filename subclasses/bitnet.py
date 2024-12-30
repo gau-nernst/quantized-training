@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.utils._pytree as pytree
 from torch import Tensor, nn
 
-from kernels import scaled_int8_mm
+from kernels import scaled_mm
 
 from .int8 import quantize_int8
 
@@ -137,7 +137,7 @@ class _BitNetTrainingLinear(torch.autograd.Function):
         ctx.save_for_backward(input_i8, row_scale, weight_i8, tensor_scale)
 
         # use int8 tensor cores
-        out = scaled_int8_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
+        out = scaled_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
         out = out.view(*batch_dims, weight.shape[0])
 
         out = out + bias if bias is not None else out
@@ -279,7 +279,7 @@ class _BitNetPacked2bitLinear(torch.autograd.Function):
         # use int8 tensor cores
         # NOTE: is doing dequant inside matmul faster when M is large?
         weight_i8 = _unpack_i2_in_i8(weight_i2)
-        out = scaled_int8_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
+        out = scaled_mm(input_i8.contiguous(), weight_i8.contiguous().T, row_scale, tensor_scale)
         out = out.view(*batch_dims, weight.shape[0])
 
         out = out + bias if bias is not None else out
