@@ -267,21 +267,7 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
     return C
 
 
-def _prune_config(configs: list[triton.Config], named_args, **kwargs):
-    out = []
-    for cfg in configs:
-        # reduce num_stages to avoid prefetch too much data
-        num_mma_per_quant_block = kwargs["QUANT_BLOCK_K"] // cfg.kwargs["BLOCK_K"]
-        cfg.num_stages = triton.cdiv(cfg.num_stages, num_mma_per_quant_block)
-        out.append(cfg)
-    return out
-
-
-@triton.autotune(
-    configs=configs,
-    key=["M", "N", "K", "stride_ak", "stride_bk"],
-    prune_configs_by=dict(early_config_prune=_prune_config),
-)
+@triton.autotune(configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk"])
 @triton.jit
 def _tile_scaled_mm_kernel(
     A_ptr,  # (M, K)
@@ -338,24 +324,25 @@ def _tile_scaled_mm_kernel(
     B_scale = scale_B_ptr + ((rn // QUANT_BLOCK_N)[None, :] * stride_scale_bn)
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    for k in range(K, 0, -QUANT_BLOCK_K):
-        mma_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
-        for _ in tl.static_range(0, QUANT_BLOCK_K, BLOCK_K):
-            if EVEN_K:
-                a = tl.load(A)
-                b = tl.load(B)
-            else:
-                a = tl.load(A, mask=rk[None, :] < k, other=0.0)
-                b = tl.load(B, mask=rk[:, None] < k, other=0.0)
-            mma_acc += tl.dot(a, b)
-            A += BLOCK_K * stride_ak
-            B += BLOCK_K * stride_bk
+    mma_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
+    for k in range(K, 0, -BLOCK_K):
+        if EVEN_K:
+            a = tl.load(A)
+            b = tl.load(B)
+        else:
+            a = tl.load(A, mask=rk[None, :] < k, other=0.0)
+            b = tl.load(B, mask=rk[:, None] < k, other=0.0)
+        mma_acc += tl.dot(a, b)
+        A += BLOCK_K * stride_ak
+        B += BLOCK_K * stride_bk
 
-        a_scale = tl.load(A_scale).to(tl.float32)
-        b_scale = tl.load(B_scale).to(tl.float32)
-        acc += mma_acc.to(tl.float32) * a_scale * b_scale
-        A_scale += stride_scale_ak
-        B_scale += stride_scale_bk
+        if (k - BLOCK_K) % QUANT_BLOCK_K == 0:
+            a_scale = tl.load(A_scale).to(tl.float32)
+            b_scale = tl.load(B_scale).to(tl.float32)
+            acc += mma_acc.to(tl.float32) * a_scale * b_scale
+            mma_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
+            A_scale += stride_scale_ak
+            B_scale += stride_scale_bk
 
     # rematerialize rm and rn to save registers
     rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
