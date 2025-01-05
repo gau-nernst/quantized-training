@@ -8,7 +8,7 @@ from kernels import _triton_mm, int4_mm, int8_mm
 
 
 def bench_f(f, *args, **kwargs):
-    return do_bench(lambda: f(*args, **kwargs), fast_flush=False, return_mode="median")
+    return do_bench(lambda: f(*args, **kwargs), return_mode="median")
 
 
 def pack_int4(x: torch.Tensor) -> torch.Tensor:
