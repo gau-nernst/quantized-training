@@ -11,7 +11,7 @@ def scaled_mm_inductor(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor):
     if A.dtype == torch.int8:
         return torch._int_mm(A, B) * scale_B * scale_A
     else:
-        return torch._scaled_mm(A, B, scale_A, scale_B, out_dtype=torch.bfloat16, use_fast_accum=True)
+        return torch._scaled_mm(A, B, scale_A, scale_B, out_dtype=torch.bfloat16)
 
 
 def scaled_mm_ref(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor):
@@ -32,6 +32,8 @@ if __name__ == "__main__":
     torch._inductor.utils.is_big_gpu = lambda _: True
     torch._inductor.config.force_fuse_int_mm_with_mul = True
 
+    HAS_FP8 = torch.cuda.get_device_capability() >= (8, 9)
+
     data = []
     sizes = [1024, 2048, 4096]
     for sz in sizes:
@@ -41,45 +43,51 @@ if __name__ == "__main__":
         B_bf16 = torch.randn(sz, sz).bfloat16()
         A_i8 = torch.randint(-128, 127, size=(sz, sz), dtype=torch.int8)
         B_i8 = torch.randint(-128, 127, size=(sz, sz), dtype=torch.int8)
-        A_f8 = torch.randn(sz, sz).to(torch.float8_e4m3fn)
-        B_f8 = torch.randn(sz, sz).to(torch.float8_e4m3fn)
         A_i4 = pack_int4(torch.randint(-8, 7, size=(sz, sz), dtype=torch.int8))
         B_i4 = pack_int4(torch.randint(-8, 7, size=(sz, sz), dtype=torch.int8))
         scale_A = torch.randn(sz, 1).bfloat16()
         scale_B = torch.randn(1, sz).bfloat16()
+        tile_scale_A = torch.randn(sz, sz // 128).bfloat16()  # tile size = (1, 128)
+        tile_scale_B = torch.randn(sz // 128, sz // 128).bfloat16()  # tile size = (128, 128)
 
         bf16_time = bench_f(torch.mm, A_bf16, B_bf16.T)
         inductor_scaled_i8_time = bench_f(scaled_mm_inductor, A_i8, B_i8.T, scale_A, scale_B)
         triton_scaled_i8_time = bench_f(scaled_mm, A_i8, B_i8.T, scale_A, scale_B)
-        cublas_tensor_scaled_f8_time = bench_f(
-            torch._scaled_mm, A_f8, B_f8.T, scale_A[0, 0].float(), scale_B[0, 0].float(), out_dtype=scale_A.dtype
-        )
-        inductor_scaled_f8_time = bench_f(scaled_mm_inductor, A_f8, B_f8.T, scale_A.float(), scale_B.float())
-        triton_scaled_f8_time = bench_f(scaled_mm, A_f8, B_f8.T, scale_A, scale_B)
+        triton_tile_scaled_i8_time = bench_f(scaled_mm, A_i8, B_i8.T, tile_scale_A, tile_scale_B.T)
         cutlass_scaled_i4_time = bench_f(scaled_int4_mm, A_i4, B_i4.T, scale_A, scale_B)
 
         assert_close(scaled_mm(A_i8, B_i8.T, scale_A, scale_B), scaled_mm_ref(A_i8, B_i8.T, scale_A, scale_B))
-        assert_close(scaled_mm(A_f8, B_f8.T, scale_A, scale_B), scaled_mm_ref(A_f8, B_f8.T, scale_A, scale_B))
+        expanded_scale_A = tile_scale_A.repeat_interleave(128, 1)
+        expanded_scale_B = tile_scale_B.repeat_interleave(128, 0).repeat_interleave(128, 1)
+        assert_close(
+            scaled_mm(A_i8, B_i8.T, tile_scale_A, tile_scale_B.T),
+            scaled_mm_ref(A_i8, B_i8.T, expanded_scale_A, expanded_scale_B.T),
+        )
         assert_close(
             scaled_int4_mm(A_i4, B_i4.T, scale_A, scale_B),
             scaled_mm_ref(unpack_int4(A_i4), unpack_int4(B_i4).T, scale_A, scale_B),
         )
 
-        scale_A = torch.randn(sz, sz // 128).bfloat16()
-        scale_B = torch.randn(sz // 128, sz // 128).bfloat16()
-        triton_tile_scaled_i8_time = bench_f(scaled_mm, A_i8, B_i8.T, scale_A, scale_B.T)
-        triton_tile_scaled_f8_time = bench_f(scaled_mm, A_f8, B_f8.T, scale_A, scale_B.T)
+        if HAS_FP8:
+            A_f8 = torch.randn(sz, sz).to(torch.float8_e4m3fn)
+            B_f8 = torch.randn(sz, sz).to(torch.float8_e4m3fn)
 
-        expanded_scale_A = scale_A.repeat_interleave(128, 1)
-        expanded_scale_B = scale_B.repeat_interleave(128, 0).repeat_interleave(128, 1)
-        assert_close(
-            scaled_mm(A_i8, B_i8.T, scale_A, scale_B.T),
-            scaled_mm_ref(A_i8, B_i8.T, expanded_scale_A, expanded_scale_B.T),
-        )
-        assert_close(
-            scaled_mm(A_f8, B_f8.T, scale_A, scale_B.T),
-            scaled_mm_ref(A_f8, B_f8.T, expanded_scale_A, expanded_scale_B.T),
-        )
+            cublas_tensor_scaled_f8_time = bench_f(
+                torch._scaled_mm, A_f8, B_f8.T, scale_A[0, 0].float(), scale_B[0, 0].float(), out_dtype=scale_A.dtype
+            )
+            inductor_scaled_f8_time = bench_f(scaled_mm_inductor, A_f8, B_f8.T, scale_A.float(), scale_B.float())
+            triton_scaled_f8_time = bench_f(scaled_mm, A_f8, B_f8.T, scale_A, scale_B)
+            triton_tile_scaled_f8_time = bench_f(scaled_mm, A_f8, B_f8.T, tile_scale_A, tile_scale_B.T)
+
+            assert_close(scaled_mm(A_f8, B_f8.T, scale_A, scale_B), scaled_mm_ref(A_f8, B_f8.T, scale_A, scale_B))
+            assert_close(
+                scaled_mm(A_f8, B_f8.T, tile_scale_A, tile_scale_B.T),
+                scaled_mm_ref(A_f8, B_f8.T, expanded_scale_A, expanded_scale_B.T),
+            )
+
+        else:
+            cublas_tensor_scaled_f8_time = inductor_scaled_f8_time = float("inf")
+            triton_scaled_f8_time = triton_tile_scaled_f8_time = float("inf")
 
         data.append(
             [
