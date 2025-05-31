@@ -9,8 +9,8 @@ from ._lib import lib, lib_ops
 CURRENT_DIR = Path(__file__).parent
 
 _cutlass_mm = torch.utils.cpp_extension.load(
-    "cutlass_mm",
-    sources=[CURRENT_DIR / "cutlass_mm.cu"],
+    "cutlass_int4mm",
+    sources=[CURRENT_DIR / "cutlass_int4mm.cu"],
     extra_cuda_cflags=["-O3"],
     extra_include_paths=[str(CURRENT_DIR / "cutlass/include")],
     verbose=True,

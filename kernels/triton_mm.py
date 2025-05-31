@@ -130,8 +130,12 @@ def _(A: Tensor, B: Tensor):
     return _triton_mm(A, B, torch.int32, torch.int32)
 
 
-def _triton_mm(A: Tensor, B: Tensor, out_dtype: torch.dtype, acc_dtype: torch.dtype):
-    ACC_DTYPE_TRITON = {torch.float32: tl.float32, torch.float16: tl.float16, torch.int32: tl.int32}[acc_dtype]
+def _triton_mm(A: Tensor, B: Tensor, out_dtype: torch.dtype | None = None, acc_dtype: torch.dtype | None = None):
+    out_dtype = out_dtype or A.dtype
+    if acc_dtype is None:
+        ACC_DTYPE_TRITON = tl.float32 if A.dtype.is_floating_point else tl.int32
+    else:
+        ACC_DTYPE_TRITON = {torch.float32: tl.float32, torch.float16: tl.float16, torch.int32: tl.int32}[acc_dtype]
     assert A.shape[1] == B.shape[0]
     M, K = A.shape
     _, N = B.shape

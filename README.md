@@ -68,47 +68,57 @@ python timm_finetune.py --model timm/vit_giant_patch14_dinov2.lvd142m --n_epochs
 
 ### Matmul
 
-4070Ti SUPER. Speedup over PyTorch BF16 matmul. See [`benchmark_mm.py`](benchmark_mm.py) (might need better configs for FP16. Use default Cutlass INT4 GEMM)
+RTX 5090 TFLOPS @ 400W. See [`benchmark_mm.py`](benchmark_mm.py) (might need better configs for FP16. Use default Cutlass INT4 GEMM)
+- `torch==2.7.0+cu128`
+- `triton==3.3.1`
 
 Row-major x Column-major (`A @ B.T`)
 
-|                                |   1024 |   2048 |   4096 |
-|:-------------------------------|-------:|-------:|-------:|
-| **4070Ti SUPER**
-| CuBLAS INT8                    |   1.95 |   2.01 |   2.90 |
-| Triton INT8                    |   2.72 |   2.87 |   3.14 |
-| Cutlass INT4                   |   2.56 |   3.81 |   5.89 |
-| Triton FP8                     |   1.78 |   1.65 |   1.64 |
-| Triton FP16 w/ FP16 accumulate |   1.86 |   1.76 |   1.29 |
-| **A100**
-| CuBLAS INT8                    |   1.28 |   1.87 |   1.53 |
-| Triton INT8                    |   1.21 |   1.96 |   1.72 |
-| Cutlass INT4                   |   1.15 |   2.33 |   2.96 |
-| Triton FP16 w/ FP16 accumulate |   0.92 |   1.26 |   0.98 |
-| **H100 NVL**
-| CuBLAS INT8                    |   1.57 |   1.01 |   1.37 |
-| Triton INT8                    |   1.56 |   1.41 |   1.75 |
-| Cutlass INT4                   |   0.08 |   0.08 |   0.07 |
-| Triton FP8                     |   0.67 |   0.28 |   0.28 |
-| Triton FP16 w/ FP16 accumulate |   1.19 |   0.67 |   0.69 |
+|                                |   1024 |   2048 |   4096 | Theoretical |
+|:-------------------------------|-------:|-------:|-------:|------------:|
+| PyTorch (CuBLAS) BF16          |  87.38 | 167.72 | 176.37 |       209.5 |
+| Triton FP16 w/ FP16 accumulate | 149.8  | 270.6  | 234.85 |       419   |
+| Triton FP8                     | 116.51 | 188.51 | 208.41 |       419   |
+| PyTorch (CuBLAS) INT8          | 210.37 | 466.03 | 479.3  |       838   |
+| Triton INT8                    | 173.63 | 466.03 | 489.68 |       838   |
+| Cutlass INT4                   |  17.77 |  72.42 |  74.1  |         0   |
+| Inductor (Triton) scaled FP8   |  95.33 | 181.81 | 215.87 |       419   |
+| Triton scaled FP8              | 116.51 | 186.41 | 207.24 |       419   |
+| Triton tile-scaled FP8         |  69.91 | 158.28 | 189.57 |       419   |
+| Inductor (Triton) scaled INT8  | 149.8  | 381.3  | 512.28 |       838   |
+| Triton scaled INT8             | 174.76 | 493.45 | 480.56 |       838   |
+| Triton tile-scaled INT8        | 149.8  | 399.46 | 399.42 |       838   |
+| Cutlass scaled INT4            |  18.08 |  74.24 |  75.23 |         0   |
 
 Row-major x Row-major (`A @ B`)
 
-|                                |   1024 |   2048 |   4096 |
-|:-------------------------------|-------:|-------:|-------:|
-| CuBLAS INT8                    |   1.03 |   0.94 |   0.92 |
-| Triton INT8                    |   1.62 |   1.98 |   2.18 |
-| Triton FP8                     |   1.70 |   1.63 |   1.71 |
-| Triton FP16 w/ FP16 accumulate |   1.64 |   1.77 |   1.38 |
+|                                |   1024 |   2048 |   4096 | Theoretical |
+|:-------------------------------|-------:|-------:|-------:|------------:|
+| PyTorch (CuBLAS) BF16          |  87.38 | 167.77 | 177.54 |       209.5 |
+| Triton FP16 w/ FP16 accumulate | 149.8  | 270.74 | 241.36 |       419   |
+| Triton FP8                     | 116.51 | 171.2  | 196.3  |       419   |
+| PyTorch (CuBLAS) INT8          |  61.74 | 167.77 | 185.9  |       838   |
+| Triton INT8                    | 152.52 | 363.98 | 360.8  |       838   |
+| Triton scaled FP8              | 115.9  | 167.77 | 193.4  |       419   |
+| Triton tile-scaled FP8         |  66.05 | 149.8  | 177.54 |       419   |
+| Inductor (Triton) scaled INT8  | 131.07 | 335.54 | 413.81 |       838   |
+| Triton scaled INT8             | 173.41 | 349.53 | 324.17 |       838   |
+| Triton tile-scaled INT8        | 116.51 | 271.97 | 299.59 |       838   |
 
 Column-major x Row-major (`A.T @ B`)
 
-|                                |   1024 |   2048 |   4096 |
-|:-------------------------------|-------:|-------:|-------:|
-| CuBLAS INT8                    |   0.87 |   0.93 |   0.88 |
-| Triton INT8                    |   1.31 |   1.43 |   1.54 |
-| Triton FP8                     |   1.48 |   1.61 |   1.70 |
-| Triton FP16 w/ FP16 accumulate |   1.42 |   1.79 |   1.35 |
+|                                |   1024 |   2048 |   4096 | Theoretical |
+|:-------------------------------|-------:|-------:|-------:|------------:|
+| PyTorch (CuBLAS) BF16          |  87.38 | 167.77 | 176.83 |       209.5 |
+| Triton FP16 w/ FP16 accumulate | 149.8  | 278.17 | 244.37 |       419   |
+| Triton FP8                     | 116.51 | 164.43 | 184.94 |       419   |
+| PyTorch (CuBLAS) INT8          |  69.91 | 209.72 | 219.67 |       838   |
+| Triton INT8                    | 147.17 | 364.72 | 362.25 |       838   |
+| Triton scaled FP8              | 116.51 | 161.71 | 184.9  |       419   |
+| Triton tile-scaled FP8         |  58.25 | 127.34 | 154.33 |       419   |
+| Inductor (Triton) scaled INT8  | 118.15 | 226.72 | 289.1  |       838   |
+| Triton scaled INT8             | 149.8  | 380.49 | 370.66 |       838   |
+| Triton tile-scaled INT8        |  95.33 | 233.02 | 257.12 |       838   |
 
 ### INT8 mixed precision training
 
