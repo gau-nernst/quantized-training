@@ -14,15 +14,16 @@ Eventually, some of these will be upstreamed to [torchao](https://github.com/pyt
 ```bash
 # Include submodules to clone cutlass
 git clone --recurse-submodules https://github.com/gau-nernst/quantized-training
+cd quantized-training
 
-# Install PyTorch from https://pytorch.org/. Recommended to use nightly version.
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch-nightly -c nvidia
+uv venv --seed --python=3.10
+source .venv/bin/activate
+
+# Install PyTorch from https://pytorch.org/. Recommend to use nightly version.
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # Install other deps. Might not be updated.
-pip install -r requirements.txt
-
-# Apply cutlass patch to fix compile error with scaled int4 matmul.
-git apply kernels/cutlass.patch --directory kernels/cutlass
+uv pip install -r requirements.txt
 ```
 
 ## Training
