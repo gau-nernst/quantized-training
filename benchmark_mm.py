@@ -84,10 +84,10 @@ if __name__ == "__main__":
         ]
 
         def bench_tflops(f, ref, *args, atol=None, rtol=None, **kwargs):
-            if isinstance(ref, Tensor):
+            if callable(ref):
+                ref = ref(*args, **kwargs)
+            if ref is not None:
                 torch.testing.assert_close(f(*args, **kwargs), ref, atol=atol, rtol=rtol)
-            elif callable(ref):
-                torch.testing.assert_close(f(*args, **kwargs), ref(*args, **kwargs), atol=atol, rtol=rtol)
             f(*args, **kwargs)
             latency_ms = do_bench(lambda: f(*args, **kwargs), return_mode="median")
             return (2 * M * N * K) / (latency_ms * 1e-3) * 1e-12

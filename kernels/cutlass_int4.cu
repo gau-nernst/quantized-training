@@ -54,7 +54,8 @@ torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
     {1, 0}  // epilogue
   };
   Gemm gemm_op;
-  CUTLASS_CHECK(gemm_op(args));
+  auto stream = at::cuda::getCurrentCUDAStream();
+  CUTLASS_CHECK(gemm_op(args, nullptr, stream));
 
   return C;
 }
@@ -62,7 +63,7 @@ torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
 // we will do input checks in python. A and B are stored as int8
 // this function is based on the following cutlass example
 // https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/ampere_gemm_universal_streamk_broadcast.cu
-// also with the help of emitted code from cutlass Python  
+// also with the help of emitted code from cutlass Python
 torch::Tensor scaled_int4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
   int M = A.size(0);
   int K = A.size(1) * 2;
@@ -166,7 +167,6 @@ torch::Tensor scaled_int4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row
 
   return C;
 }
-
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("int4_mm", &int4_mm);
