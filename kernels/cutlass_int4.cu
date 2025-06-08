@@ -168,7 +168,7 @@ torch::Tensor scaled_int4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row
   return C;
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("int4_mm", &int4_mm);
-  m.def("scaled_int4_mm", &scaled_int4_mm);
+TORCH_LIBRARY_IMPL(qtrain, CUDA, m) {
+  m.impl("qtrain::int4_mm", &int4_mm);
+  m.impl("qtrain::scaled_int4_mm", &scaled_int4_mm);
 }

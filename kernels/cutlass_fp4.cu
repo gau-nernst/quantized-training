@@ -3,7 +3,6 @@
 #include "cutlass/cutlass.h"
 
 #include "cute/tensor.hpp"
-#include "cutlass/tensor_ref.h"
 #include "cutlass/detail/sm100_blockscaled_layout.hpp"
 #include "cutlass/epilogue/collective/collective_builder.hpp"
 #include "cutlass/epilogue/thread/linear_combination.h"
@@ -90,9 +89,6 @@ torch::Tensor nvfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A,
   auto stride_B = cutlass::make_cute_packed_stride(StrideB{}, {N, K, 1});
   auto stride_D = cutlass::make_cute_packed_stride(StrideD{}, {M, N, 1});
 
-  auto layout_A = make_layout(make_shape(M, K, 1), stride_A);
-  auto layout_B = make_layout(make_shape(N, K, 1), stride_B);
-  auto layout_D = make_layout(make_shape(M, N, 1), stride_D);
   auto layout_SFA = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(cute::make_shape(M, N, K, 1));
   auto layout_SFB = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(cute::make_shape(M, N, K, 1));
 
@@ -100,10 +96,10 @@ torch::Tensor nvfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A,
     cutlass::gemm::GemmUniversalMode::kGemm,
     {M, N, K, 1},
     { // Mainloop arguments
-      reinterpret_cast<cutlass::float_e2m1_t *>(A.data_ptr()), stride_A,
-      reinterpret_cast<cutlass::float_e2m1_t *>(B.data_ptr()), stride_B,
-      reinterpret_cast<cutlass::float_ue4m3_t *>(scales_A.data_ptr()), layout_SFA,
-      reinterpret_cast<cutlass::float_ue4m3_t *>(scales_B.data_ptr()), layout_SFB,
+      reinterpret_cast<ElementA::DataType *>(A.data_ptr()), stride_A,
+      reinterpret_cast<ElementB::DataType *>(B.data_ptr()), stride_B,
+      reinterpret_cast<ElementA::ScaleFactorType *>(scales_A.data_ptr()), layout_SFA,
+      reinterpret_cast<ElementB::ScaleFactorType *>(scales_B.data_ptr()), layout_SFB,
     },
     { // Epilogue arguments
       {1.0, 0.0},
@@ -120,11 +116,11 @@ torch::Tensor nvfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A,
   auto stream = at::cuda::getCurrentCUDAStream();
 
   CUTLASS_CHECK(gemm.initialize(arguments, workspace.data_ptr(), stream));
-  CUTLASS_CHECK(gemm.run());
+  CUTLASS_CHECK(gemm.run(stream));
 
   return D;
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("nvfp4_mm", &nvfp4_mm);
+TORCH_LIBRARY_IMPL(qtrain, CUDA, m) {
+  m.impl("qtrain::nvfp4_mm", &nvfp4_mm);
 }
