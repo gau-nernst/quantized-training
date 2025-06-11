@@ -37,6 +37,7 @@ if torch.cuda.get_device_capability() == (12, 0):
 lib.define("int4_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("scaled_int4_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
 lib.define("nvfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
+lib.define("mxfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
 
 
 def int4_mm(A: Tensor, B: Tensor) -> Tensor:
@@ -64,13 +65,21 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
     return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=row_scale.dtype)
 
 
-def fp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
+def nvfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
     assert A.is_cuda and A.ndim == 2 and A.dtype is torch.uint8 and A.is_contiguous()
     assert B.is_cuda and B.ndim == 2 and B.dtype is torch.uint8 and B.T.is_contiguous()
     assert A.shape[1] == B.shape[0]
     return lib_ops.nvfp4_mm(A, B, scale_A, scale_B)
 
 
+def mxfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
+    assert A.is_cuda and A.ndim == 2 and A.dtype is torch.uint8 and A.is_contiguous()
+    assert B.is_cuda and B.ndim == 2 and B.dtype is torch.uint8 and B.T.is_contiguous()
+    assert A.shape[1] == B.shape[0]
+    return lib_ops.mxfp4_mm(A, B, scale_A, scale_B)
+
+
 @torch.library.impl(lib, "nvfp4_mm", "Meta")
+@torch.library.impl(lib, "mxfp4_mm", "Meta")
 def _(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
     return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=torch.bfloat16)
