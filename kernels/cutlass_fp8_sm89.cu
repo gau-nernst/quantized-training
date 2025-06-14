@@ -13,16 +13,13 @@
 
 
 // define common params
-using ElementA           = cutlass::float_e4m3_t;
-using ElementB           = cutlass::float_e4m3_t;
-using ElementC           = cutlass::bfloat16_t;
+using ElementOutput      = cutlass::bfloat16_t;
+using ElementScale       = float;
 using ElementAccumulator = float;
 using OpClass            = cutlass::arch::OpClassTensorOp;
 using ArchTag            = cutlass::arch::Sm89;
 
-constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
-constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
-constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+constexpr int AlignmentOutput = 128 / cutlass::sizeof_bits<ElementOutput>::value;
 
 torch::Tensor fp8_mm(torch::Tensor A, torch::Tensor B) {
   int M = A.size(0);
@@ -30,20 +27,22 @@ torch::Tensor fp8_mm(torch::Tensor A, torch::Tensor B) {
   int N = B.size(1);
   torch::Tensor C = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
 
+  using ElementInput = cutlass::float_e4m3_t;
+
   // TODO: use better config
   // static int const kStages = 3;
   using Gemm = cutlass::gemm::device::Gemm<
-    ElementA, cutlass::layout::RowMajor,    // A matrix
-    ElementB, cutlass::layout::ColumnMajor, // B matrix
-    ElementC, cutlass::layout::RowMajor,    // C matrix
+    ElementInput, cutlass::layout::RowMajor,    // A matrix
+    ElementInput, cutlass::layout::ColumnMajor, // B matrix
+    ElementOutput, cutlass::layout::RowMajor,   // C matrix
     ElementAccumulator, OpClass, ArchTag
   >;
   Gemm::Arguments args {
     {M, N, K},
-    {reinterpret_cast<ElementA *>(A.data_ptr()), K},
-    {reinterpret_cast<ElementB *>(B.data_ptr()), K},
-    {reinterpret_cast<ElementC *>(C.data_ptr()), N},
-    {reinterpret_cast<ElementC *>(C.data_ptr()), N},
+    {reinterpret_cast<ElementInput *>(A.data_ptr()), K},
+    {reinterpret_cast<ElementInput *>(B.data_ptr()), K},
+    {reinterpret_cast<ElementOutput *>(C.data_ptr()), N},
+    {reinterpret_cast<ElementOutput *>(C.data_ptr()), N},
     {1, 0}  // epilogue
   };
   Gemm gemm_op;
@@ -56,12 +55,17 @@ torch::Tensor fp8_mm(torch::Tensor A, torch::Tensor B) {
 // this function is based on the following cutlass example
 // https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/ampere_gemm_universal_streamk_broadcast.cu
 // also with the help of emitted code from cutlass Python
-torch::Tensor scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
-  int M = A.size(0);
-  int K = A.size(1);
-  int N = B.size(1);
-  torch::Tensor C = torch::empty({M, N}, row_scale.options());
-
+template <typename ElementInput>
+void scaled_fp8_mm_kernel(
+  const ElementInput* A_ptr,
+  const ElementInput* B_ptr,
+  const ElementScale* row_scale_ptr,
+  const ElementScale* col_scale_ptr,
+  ElementOutput* out_ptr,
+  int M,
+  int N,
+  int K
+) {
   using namespace cute;
 
   // https://github.com/NVIDIA/cutlass/blob/v3.9.2/examples/58_ada_fp8_gemm/ada_fp8_gemm.cu
@@ -74,7 +78,7 @@ torch::Tensor scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_
 
   // build epilogue visitor tree
   using OutputTileThreadMap = cutlass::epilogue::threadblock::OutputTileThreadLayout<
-    ThreadblockShape, WarpShape, ElementC, AlignmentC, numEpilogueStages
+    ThreadblockShape, WarpShape, ElementOutput, AlignmentOutput, numEpilogueStages
   >;
 
   using ElementEpilogue = float;
@@ -86,28 +90,29 @@ torch::Tensor scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_
 
   // (1, N)
   using ColScale = cutlass::epilogue::threadblock::VisitorRowBroadcast<
-    OutputTileThreadMap, ElementC,
+    OutputTileThreadMap, ElementScale,
     cute::Stride<_0, _1, int32_t>  // MNL
   >;
   using EVTCompute0 = cutlass::epilogue::threadblock::Sm80EVT<Multiply, Accum, ColScale>;
 
   // (M, 1)
   using RowScale = cutlass::epilogue::threadblock::VisitorColBroadcast<
-    OutputTileThreadMap, ElementC,
+    OutputTileThreadMap, ElementScale,
     cute::Stride<_1, _0, int32_t>  // MNL
   >;
   using EVTCompute1 = cutlass::epilogue::threadblock::Sm80EVT<Multiply, EVTCompute0, RowScale>;
 
   using Output = cutlass::epilogue::threadblock::VisitorAuxStore<
-    OutputTileThreadMap, ElementC, RoundMode,
+    OutputTileThreadMap, ElementOutput, RoundMode,
     cute::Stride<int64_t, _1, int64_t>  // MNL
   >;
   using EVTOutput = cutlass::epilogue::threadblock::Sm80EVT<Output, EVTCompute1>;
 
+  constexpr int AlignmentInput = 128 / cutlass::sizeof_bits<ElementInput>::value;
   using EVTKernel = typename cutlass::gemm::kernel::DefaultGemmWithVisitor<
-    ElementA, cutlass::layout::RowMajor,    cutlass::ComplexTransform::kNone, AlignmentA,
-    ElementB, cutlass::layout::ColumnMajor, cutlass::ComplexTransform::kNone, AlignmentB,
-    ElementC, cutlass::layout::RowMajor,                                      AlignmentC,
+    ElementInput, cutlass::layout::RowMajor,    cutlass::ComplexTransform::kNone, AlignmentInput,
+    ElementInput, cutlass::layout::ColumnMajor, cutlass::ComplexTransform::kNone, AlignmentInput,
+    ElementOutput, cutlass::layout::RowMajor, AlignmentOutput,
     ElementAccumulator, ElementEpilogue, OpClass, ArchTag,
     ThreadblockShape, WarpShape, InstructionShape,
     EVTOutput,
@@ -116,28 +121,22 @@ torch::Tensor scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_
     cutlass::arch::OpMultiplyAdd,
     numEpilogueStages
   >::GemmKernel;
-  using DeviceGemm = cutlass::gemm::device::GemmUniversalAdapter<EVTKernel>;
-
-  const ElementA *A_ptr         = reinterpret_cast<ElementA *>(A.data_ptr());
-  const ElementB *B_ptr         = reinterpret_cast<ElementB *>(B.data_ptr());
-  const ElementC *col_scale_ptr = reinterpret_cast<ElementC *>(col_scale.data_ptr());
-  const ElementC *row_scale_ptr = reinterpret_cast<ElementC *>(row_scale.data_ptr());
-  ElementC *C_ptr               = reinterpret_cast<ElementC *>(C.data_ptr());
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<EVTKernel>;
 
   typename EVTOutput::Arguments callback_args{
     {
       {
-        {},                                                      // Accum
-        {col_scale_ptr, ElementC(0), {_0{}, _1{}, int32_t(N)}},  // ColScale
-        {}                                                       // Multiply
-      },                                                         // EVTCompute0
-      {row_scale_ptr, ElementC(0), {_1{}, _0{}, int32_t(M)}},    // RowScale
-      {}                                                         // Multiply
-    },                                                           // EVTCompute1
-    {C_ptr, {int64_t{N}, _1{}, int64_t{M*N}}}                    // EVTOutput
+        {},                                                          // Accum
+        {col_scale_ptr, ElementScale(0), {_0{}, _1{}, int32_t(N)}},  // ColScale
+        {}                                                           // Multiply
+      },                                                             // EVTCompute0
+      {row_scale_ptr, ElementScale(0), {_1{}, _0{}, int32_t(M)}},    // RowScale
+      {}                                                             // Multiply
+    },                                                               // EVTCompute1
+    {out_ptr, {int64_t{N}, _1{}, int64_t{M*N}}}                      // EVTOutput
   };
 
-  typename DeviceGemm::Arguments args(
+  typename Gemm::Arguments args(
     cutlass::gemm::GemmUniversalMode::kGemm,
     cutlass::gemm::GemmCoord{M, N, K},
     1,                              // batch_split
@@ -147,12 +146,38 @@ torch::Tensor scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_
     K, K, 0, 0                      // stride A, B, C, D
   );
 
-  DeviceGemm gemm_op;
-  auto stream = at::cuda::getCurrentCUDAStream();
-  CUTLASS_CHECK(gemm_op.can_implement(args));
-  CUTLASS_CHECK(gemm_op(args, nullptr, stream));
+  Gemm gemm;
+  CUTLASS_CHECK(gemm.can_implement(args));
 
-  return C;
+  auto stream = at::cuda::getCurrentCUDAStream();
+  CUTLASS_CHECK(gemm(args, nullptr, stream));
+}
+
+torch::Tensor scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
+  int M = A.size(0);
+  int K = A.size(1);
+  int N = B.size(1);
+  torch::Tensor out = torch::empty({M, N}, row_scale.options().dtype(torch::kBFloat16));
+
+  const ElementScale *row_scale_ptr = reinterpret_cast<ElementScale *>(row_scale.data_ptr());
+  const ElementScale *col_scale_ptr = reinterpret_cast<ElementScale *>(col_scale.data_ptr());
+  ElementOutput *out_ptr            = reinterpret_cast<ElementOutput *>(out.data_ptr());
+
+  if (A.dtype() == torch::kFloat8_e4m3fn) {
+    using ElementInput        = cutlass::float_e4m3_t;
+    const ElementInput *A_ptr = reinterpret_cast<ElementInput *>(A.data_ptr());
+    const ElementInput *B_ptr = reinterpret_cast<ElementInput *>(B.data_ptr());
+    scaled_fp8_mm_kernel(A_ptr, B_ptr, row_scale_ptr, col_scale_ptr, out_ptr, M, N, K);
+  } else if (A.dtype() == torch::kFloat8_e5m2) {
+    using ElementInput        = cutlass::float_e5m2_t;
+    const ElementInput *A_ptr = reinterpret_cast<ElementInput *>(A.data_ptr());
+    const ElementInput *B_ptr = reinterpret_cast<ElementInput *>(B.data_ptr());
+    scaled_fp8_mm_kernel(A_ptr, B_ptr, row_scale_ptr, col_scale_ptr, out_ptr, M, N, K);
+  } else {
+    TORCH_CHECK(false, "Unsupported input dtype");
+  }
+
+  return out;
 }
 
 TORCH_LIBRARY_IMPL(qtrain, CUDA, m) {

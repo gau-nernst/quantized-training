@@ -84,9 +84,11 @@ def scaled_int4_mm(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -
 
 
 def scaled_fp8_mm(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
-    assert A.ndim == 2 and A.dtype is torch.float8_e4m3fn and A.is_contiguous()
-    assert B.ndim == 2 and B.dtype is torch.float8_e4m3fn and B.T.is_contiguous()
-    assert row_scale.dtype == col_scale.dtype == torch.bfloat16  # only support bfloat16 for now
+    assert A.ndim == 2 and A.is_contiguous()
+    assert B.ndim == 2 and B.T.is_contiguous()
+    assert A.dtype == B.dtype
+    assert A.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+    assert row_scale.dtype == col_scale.dtype == torch.float32  # only support float32 for now
     assert row_scale.squeeze().shape == (A.shape[0],)
     assert col_scale.squeeze().shape == (B.shape[1],)
     return lib_ops.scaled_fp8_mm(A, B, row_scale, col_scale)
