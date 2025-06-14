@@ -30,6 +30,7 @@ torch::Tensor fp8_mm(torch::Tensor A, torch::Tensor B) {
   int N = B.size(1);
   torch::Tensor C = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
 
+  // TODO: use better config
   // static int const kStages = 3;
   using Gemm = cutlass::gemm::device::Gemm<
     ElementA, cutlass::layout::RowMajor,    // A matrix

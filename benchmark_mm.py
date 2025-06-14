@@ -5,7 +5,7 @@ import torch
 from torch import Tensor
 from triton.testing import do_bench
 
-from kernels import _triton_mm, int4_mm, int8_mm, scaled_int4_mm, scaled_mm
+from kernels import _triton_mm, int4_mm, int8_mm, scaled_int4_mm, scaled_mm, fp8_mm, scaled_fp8_mm
 
 
 def pack_int4(x: torch.Tensor) -> torch.Tensor:
@@ -111,23 +111,28 @@ if __name__ == "__main__":
             A_f8 = to_layout(torch.randn(M, K).to(torch.float8_e4m3fn), args.a_column_major)
             B_f8 = to_layout(torch.randn(K, N).to(torch.float8_e4m3fn), args.b_column_major)
 
-            f8_triton_tflops = bench_tflops(
-                _triton_mm, (A_f8.float() @ B_f8.float()).bfloat16(), A_f8, B_f8, out_dtype=torch.bfloat16
-            )
+            f8_mm_output = (A_f8.float() @ B_f8.float()).bfloat16()
+            f8_triton_tflops = bench_tflops(_triton_mm, f8_mm_output, A_f8, B_f8, out_dtype=torch.bfloat16)
             if not args.a_column_major and args.b_column_major:
+                f8_cutlass_tflops = bench_tflops(fp8_mm, f8_mm_output, A_f8, B_f8)
                 scaled_f8_inductor_tflops = bench_tflops(
                     scaled_mm_inductor, scaled_mm_ref, A_f8, B_f8, scale_A, scale_B
                 )
+                scaled_f8_cutlass_tflops = bench_tflops(scaled_fp8_mm, scaled_mm_ref, A_f8, B_f8, scale_A, scale_B)
             else:
+                f8_cutlass_tflops = 0
                 scaled_f8_inductor_tflops = 0
+                scaled_f8_cutlass_tflops = 0
             scaled_f8_triton_tflops = bench_tflops(scaled_mm, scaled_mm_ref, A_f8, B_f8, scale_A, scale_B)
             tile_scaled_f8_triton_tflops = bench_tflops(
                 scaled_mm, scaled_mm_ref, A_f8, B_f8, tile_scale_A, tile_scale_B
             )
-            # TODO: add cutlass row-wise scaling, either via torch._scaled_mm() or add my own
 
         else:
             f8_triton_tflops = 0
+            f8_cutlass_tflops = 0
+            scaled_f8_inductor_tflops = 0
+            scaled_f8_cutlass_tflops = 0
 
         # INT4
         if not args.a_column_major and args.b_column_major:
@@ -152,11 +157,13 @@ if __name__ == "__main__":
                 bf16_tflops,
                 f16_acc_f16_triton_tflops,
                 f8_triton_tflops,
+                f8_cutlass_tflops,
                 i8_pt_tflops,
                 i8_triton_tflops,
                 i4_cutlass_tflops,
                 scaled_f8_inductor_tflops,
                 scaled_f8_triton_tflops,
+                scaled_f8_cutlass_tflops,
                 tile_scaled_f8_triton_tflops,
                 scaled_i8_inductor_tflops,
                 scaled_i8_triton_tflops,
@@ -180,11 +187,13 @@ if __name__ == "__main__":
                 bf16_tflops,
                 fp16_acc_fp16_tflops,
                 f8_tflops,  # triton
+                f8_tflops,  # cutlass
                 i8_tflops,  # pt
                 i8_tflops,  # triton
                 i4_tflops,  # cutlass
                 f8_tflops,  # scaled inductor
                 f8_tflops,  # scaled triton
+                f8_tflops,  # scaled cutlass
                 f8_tflops,  # tile-scaled triton
                 i8_tflops,  # scaled inductor
                 i8_tflops,  # scaled triton
@@ -200,11 +209,13 @@ if __name__ == "__main__":
             "PyTorch (CuBLAS) BF16",
             "Triton FP16 w/ FP16 accumulate",
             "Triton FP8",
+            "Cutlass FP8",
             "PyTorch (CuBLAS) INT8",
             "Triton INT8",
             "Cutlass INT4",
             "Inductor (Triton) scaled FP8",
             "Triton scaled FP8",
+            "Cutlass scaled FP8",
             "Triton tile-scaled FP8",
             "Inductor (Triton) scaled INT8",
             "Triton scaled INT8",
