@@ -36,7 +36,7 @@ def scaled_mm_ref(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor):
     for dim in [0, 1]:
         scale_A = scale_A.repeat_interleave(A.shape[dim] // scale_A.shape[dim], dim)
         scale_B = scale_B.repeat_interleave(B.shape[dim] // scale_B.shape[dim], dim)
-    return ((A.float() * scale_A) @ (B.float() * scale_B)).to(scale_A.dtype)
+    return ((A.float() * scale_A) @ (B.float() * scale_B)).bfloat16()
 
 
 if __name__ == "__main__":
@@ -118,7 +118,7 @@ if __name__ == "__main__":
                 scaled_f8_inductor_tflops = bench_tflops(
                     scaled_mm_inductor, scaled_mm_ref, A_f8, B_f8, scale_A, scale_B
                 )
-                scaled_f8_cutlass_tflops = bench_tflops(scaled_fp8_mm, scaled_mm_ref, A_f8, B_f8, scale_A, scale_B)
+                scaled_f8_cutlass_tflops = bench_tflops(scaled_fp8_mm, scaled_mm_ref, A_f8, B_f8, scale_A.float(), scale_B.float())
             else:
                 f8_cutlass_tflops = 0
                 scaled_f8_inductor_tflops = 0
