@@ -16,17 +16,27 @@ extra_include_paths = [
 # TODO: figure out a way to remove default -gencode=...
 torch.utils.cpp_extension.load(
     "cutlass_sm80",
-    sources=[CURRENT_DIR / "cutlass_int4.cu"],
+    sources=[CURRENT_DIR / "cutlass_int4_sm80.cu"],
     extra_cuda_cflags=["-gencode=arch=compute_80,code=sm_80"],
     extra_include_paths=extra_include_paths,
     verbose=True,
     is_python_module=False,
 )
 
+if torch.cuda.get_device_capability() >= (8, 9):
+    torch.utils.cpp_extension.load(
+        "cutlass_sm89",
+        sources=[CURRENT_DIR / "cutlass_fp8_sm89.cu"],
+        extra_cuda_cflags=["-gencode=arch=compute_89,code=sm_89"],
+        extra_include_paths=extra_include_paths,
+        verbose=True,
+        is_python_module=False,
+    )
+
 if torch.cuda.get_device_capability() == (12, 0):
     torch.utils.cpp_extension.load(
         "cutlass_sm120a",
-        sources=[CURRENT_DIR / "cutlass_fp4.cu"],
+        sources=[CURRENT_DIR / "cutlass_fp4_sm120a.cu"],
         extra_cuda_cflags=["-gencode=arch=compute_120a,code=sm_120a"],
         extra_include_paths=extra_include_paths,
         verbose=True,
@@ -36,6 +46,8 @@ if torch.cuda.get_device_capability() == (12, 0):
 
 lib.define("int4_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("scaled_int4_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
+lib.define("fp8_mm(Tensor A, Tensor B) -> Tensor")
+lib.define("scaled_fp8_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
 lib.define("nvfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
 lib.define("mxfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
 
@@ -60,7 +72,17 @@ def scaled_int4_mm(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -
     return lib_ops.scaled_int4_mm(A, B, row_scale, col_scale)
 
 
+def scaled_fp8_mm(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
+    assert A.is_cuda and A.ndim == 2 and A.dtype is torch.float8_e4m3fn and A.is_contiguous()
+    assert B.is_cuda and B.ndim == 2 and B.dtype is torch.float8_e4m3fn and B.T.is_contiguous()
+    assert row_scale.dtype == col_scale.dtype == torch.bfloat16  # only support bfloat16 for now
+    assert row_scale.squeeze().shape == (A.shape[0],)
+    assert col_scale.squeeze().shape == (B.shape[1],)
+    return lib_ops.scaled_fp8_mm(A, B, row_scale, col_scale)
+
+
 @torch.library.impl(lib, "scaled_int4_mm", "Meta")
+@torch.library.impl(lib, "scaled_fp8_mm", "Meta")
 def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
     return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=row_scale.dtype)
 
