@@ -53,7 +53,6 @@ def _grid(meta):
 @triton.autotune(configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk"])
 @triton.jit
 def _matmul_kernel(
-    # fmt: off
     A_ptr, B_ptr, C_ptr,
     M, N, K,
     stride_am, stride_ak,
@@ -65,8 +64,7 @@ def _matmul_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr = 8,
-    # fmt: on
-):
+):  # fmt: skip
     # based on triton.ops.matmul
     pid = tl.program_id(0)
     grid_m = (M + BLOCK_M - 1) // BLOCK_M

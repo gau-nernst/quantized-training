@@ -1,8 +1,3 @@
-[tool.black]
+[tool.ruff]
 line-length = 120
-extend-exclude = "kernels/cutlass/"
-
-[tool.isort]
-profile = "black"
-line_length = 120
-extend_skip = "kernels/cutlass/"
+extend-exclude = ["kernels/cutlass/"]
