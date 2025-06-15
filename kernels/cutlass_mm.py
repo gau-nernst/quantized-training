@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import torch
@@ -13,40 +14,40 @@ extra_include_paths = [
     str(CURRENT_DIR / "cutlass/tools/util/include"),
 ]
 
+
 # TODO: figure out a way to remove default -gencode=...
-torch.utils.cpp_extension.load(
-    "cutlass_sm80",
-    sources=[CURRENT_DIR / "cutlass_int4_sm80.cu"],
-    extra_cuda_cflags=["-gencode=arch=compute_80,code=sm_80"],
-    extra_include_paths=extra_include_paths,
-    verbose=True,
-    is_python_module=False,
-)
+def load_extension(major: int, minor: int, a: bool = False):
+    if torch.cuda.get_device_capability() >= (major, minor):
+        os.environ["TORCH_CUDA_ARCH_LIST"] = f"{major}.{minor}"
+        cc = f"{major}{minor}"
 
-if torch.cuda.get_device_capability() >= (8, 9):
-    torch.utils.cpp_extension.load(
-        "cutlass_sm89",
-        sources=[CURRENT_DIR / "cutlass_fp8_sm89.cu"],
-        extra_cuda_cflags=["-gencode=arch=compute_89,code=sm_89"],
-        extra_include_paths=extra_include_paths,
-        verbose=True,
-        is_python_module=False,
-    )
+        if a:
+            os.environ["TORCH_CUDA_ARCH_LIST"] += "a"
+            cc += "a"
 
-if torch.cuda.get_device_capability() == (12, 0):
-    torch.utils.cpp_extension.load(
-        "cutlass_sm120a",
-        sources=[CURRENT_DIR / "cutlass_fp4_sm120a.cu"],
-        extra_cuda_cflags=["-gencode=arch=compute_120a,code=sm_120a"],
-        extra_include_paths=extra_include_paths,
-        verbose=True,
-        is_python_module=False,
-    )
+        os.environ["TORCH_CUDA_ARCH_LIST"] += "+PTX"
+
+        torch.utils.cpp_extension.load(
+            f"cutlass_sm{cc}",
+            sources=list(CURRENT_DIR.glob(f"cutlass_sm{cc}_*.cu")),
+            # extra_cuda_cflags=["-DCUTLASS_DEBUG_TRACE_LEVEL=1"],
+            extra_include_paths=extra_include_paths,
+            verbose=True,
+            is_python_module=False,
+        )
+
+        del os.environ["TORCH_CUDA_ARCH_LIST"]
+
+
+load_extension(8, 0)
+load_extension(8, 9)
+load_extension(12, 0, a=True)
 
 
 lib.define("int4_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("scaled_int4_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
 lib.define("fp8_mm(Tensor A, Tensor B) -> Tensor")
+lib.define("cutlass_fp8_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("scaled_fp8_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
 lib.define("nvfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
 lib.define("mxfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
@@ -66,7 +67,10 @@ def _(A: Tensor, B: Tensor) -> Tensor:
 def fp8_mm(A: Tensor, B: Tensor) -> Tensor:
     assert A.ndim == 2 and A.dtype is torch.float8_e4m3fn and A.is_contiguous()
     assert B.ndim == 2 and B.dtype is torch.float8_e4m3fn and B.T.is_contiguous()
-    return lib_ops.fp8_mm(A, B)
+    if torch.cuda.get_device_capability()[0] == 12:
+        return lib_ops.cutlass_fp8_mm(A, B)
+    else:
+        return lib_ops.fp8_mm(A, B)
 
 
 @torch.library.impl(lib, "fp8_mm", "Meta")

@@ -118,7 +118,9 @@ if __name__ == "__main__":
                 scaled_f8_inductor_tflops = bench_tflops(
                     scaled_mm_inductor, scaled_mm_ref, A_f8, B_f8, scale_A, scale_B
                 )
-                scaled_f8_cutlass_tflops = bench_tflops(scaled_fp8_mm, scaled_mm_ref, A_f8, B_f8, scale_A.float(), scale_B.float())
+                scaled_f8_cutlass_tflops = bench_tflops(
+                    scaled_fp8_mm, scaled_mm_ref, A_f8, B_f8, scale_A.float(), scale_B.float()
+                )
             else:
                 f8_cutlass_tflops = 0
                 scaled_f8_inductor_tflops = 0

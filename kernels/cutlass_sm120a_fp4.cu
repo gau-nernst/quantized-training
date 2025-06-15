@@ -1,7 +1,6 @@
 // CUTLASS example 79
 
 #include "cutlass/cutlass.h"
-
 #include "cute/tensor.hpp"
 #include "cutlass/detail/sm100_blockscaled_layout.hpp"
 #include "cutlass/epilogue/collective/collective_builder.hpp"
