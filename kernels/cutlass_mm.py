@@ -48,6 +48,7 @@ lib.define("int4_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("scaled_int4_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
 lib.define("fp8_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("cutlass_fp8_mm(Tensor A, Tensor B) -> Tensor")
+lib.define("cutlass_scaled_fp8_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
 lib.define("scaled_fp8_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
 lib.define("nvfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
 lib.define("mxfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
@@ -95,7 +96,11 @@ def scaled_fp8_mm(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) ->
     assert row_scale.dtype == col_scale.dtype == torch.float32  # only support float32 for now
     assert row_scale.squeeze().shape == (A.shape[0],)
     assert col_scale.squeeze().shape == (B.shape[1],)
-    return lib_ops.scaled_fp8_mm(A, B, row_scale, col_scale)
+
+    if torch.cuda.get_device_capability()[0] == 12:
+        return lib_ops.cutlass_scaled_fp8_mm(A, B, row_scale, col_scale)
+    else:
+        return lib_ops.scaled_fp8_mm(A, B, row_scale, col_scale)
 
 
 @torch.library.impl(lib, "scaled_int4_mm", "Meta")
@@ -119,6 +124,7 @@ def mxfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
     return lib_ops.mxfp4_mm(A, B, scale_A, scale_B)
 
 
+@torch.library.impl(lib, "cutlass_scaled_fp8_mm", "Meta")
 @torch.library.impl(lib, "nvfp4_mm", "Meta")
 @torch.library.impl(lib, "mxfp4_mm", "Meta")
 def _(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
