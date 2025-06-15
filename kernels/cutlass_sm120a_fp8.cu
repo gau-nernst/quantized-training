@@ -21,12 +21,12 @@ using ElementScale  = float;
 using ElementOutput = cutlass::bfloat16_t;
 constexpr int AlignmentInput  = 128 / cutlass::sizeof_bits<ElementInput>::value;
 constexpr int AlignmentOutput = 128 / cutlass::sizeof_bits<ElementOutput>::value;
+constexpr auto RoundStyle     = cutlass::FloatRoundStyle::round_to_nearest;
 
 using ElementAccumulator = float;
 using ArchTag = cutlass::arch::Sm120;
 using OperatorClass = cutlass::arch::OpClassTensorOp;
 
-using TileShape = Shape<_128, _128, _128>;
 using ClusterShape = Shape<_1, _1, _1>;
 
 torch::Tensor cutlass_fp8_mm(torch::Tensor A, torch::Tensor B)
@@ -36,6 +36,8 @@ torch::Tensor cutlass_fp8_mm(torch::Tensor A, torch::Tensor B)
   int N = B.size(1);
 
   torch::Tensor D = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
+
+  using TileShape = Shape<_128, _128, _128>;
 
   using EpilogueScheduleType = cutlass::epilogue::collective::EpilogueScheduleAuto;
   using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
@@ -98,17 +100,19 @@ torch::Tensor cutlass_fp8_mm(torch::Tensor A, torch::Tensor B)
   return D;
 }
 
-torch::Tensor cutlass_scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scale_A, torch::Tensor scale_B)
-{
-  int M = A.size(0);
-  int K = A.size(1);
-  int N = B.size(1);
-
-  torch::Tensor D = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
-
+template <typename TileShape>
+void cutlass_scaled_fp8_mm_dispatch(
+  const ElementInput* A_ptr,
+  const ElementInput* B_ptr,
+  const ElementScale* scale_A_ptr,
+  const ElementScale* scale_B_ptr,
+  ElementOutput* out_ptr,
+  int M,
+  int N,
+  int K
+) {
   using namespace cutlass::epilogue::fusion;
 
-  constexpr auto RoundStyle = cutlass::FloatRoundStyle::round_to_nearest;
   using Multiply = Sm90Compute<cutlass::multiplies, ElementAccumulator, ElementAccumulator, RoundStyle>;
   using Cast = Sm90Compute<cutlass::epilogue::thread::Identity, ElementOutput, ElementAccumulator, RoundStyle>;
 
@@ -127,6 +131,11 @@ torch::Tensor cutlass_scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Ten
       EpilogueScheduleType,
       EVT2>::CollectiveOp;
 
+  using KernelSchedule = std::conditional_t<
+    cute::size<0>(TileShape{}) < 128,
+    cutlass::gemm::KernelTmaWarpSpecializedPingpong,
+    cutlass::gemm::KernelTmaWarpSpecializedCooperativeSm120<2>>;
+
   using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
     ArchTag, OperatorClass,
     ElementInput, cutlass::layout::RowMajor, AlignmentInput,
@@ -134,7 +143,7 @@ torch::Tensor cutlass_scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Ten
     ElementAccumulator,
     TileShape, ClusterShape,
     cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>,
-    cutlass::gemm::collective::KernelScheduleAuto>::CollectiveOp;
+    KernelSchedule>::CollectiveOp;
 
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
       Shape<int, int, int, int>,
@@ -152,41 +161,56 @@ torch::Tensor cutlass_scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Ten
       cutlass::gemm::GemmUniversalMode::kGemm,
       {M, N, K, 1},
       {
-          reinterpret_cast<ElementInput *>(A.data_ptr()),
-          stride_A,
-          reinterpret_cast<ElementInput *>(B.data_ptr()),
-          stride_B,
+        A_ptr, stride_A,
+        B_ptr, stride_B,
       },
       {
-          {  // cast
-            {  // row-scale
-              {reinterpret_cast<ElementScale*>(scale_A.data_ptr())},
-              {  // col-scale
-                {reinterpret_cast<ElementScale*>(scale_B.data_ptr())},
-                {},
-                {}
-              },
+        {  // cast
+          {  // row-scale
+            {scale_A_ptr},
+            {  // col-scale
+              {scale_B_ptr},
+              {},
               {}
             },
             {}
           },
-          reinterpret_cast<ElementOutput *>(D.data_ptr()),
-          stride_D,
-          reinterpret_cast<ElementOutput *>(D.data_ptr()),
-          stride_D,
+          {}
+        },
+        out_ptr, stride_D,
+        out_ptr, stride_D,
       }};
 
   Gemm gemm;
   CUTLASS_CHECK(gemm.can_implement(arguments));
 
-  long workspace_size = Gemm::get_workspace_size(arguments);
-  torch::Tensor workspace = torch::empty({workspace_size}, A.options().dtype(torch::kByte));
   auto stream = at::cuda::getCurrentCUDAStream();
-
-  CUTLASS_CHECK(gemm.initialize(arguments, workspace.data_ptr(), stream));
+  CUTLASS_CHECK(gemm.initialize(arguments, nullptr, stream));
   CUTLASS_CHECK(gemm.run(stream));
+}
 
-  return D;
+torch::Tensor cutlass_scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scale_A, torch::Tensor scale_B)
+{
+  int M = A.size(0);
+  int K = A.size(1);
+  int N = B.size(1);
+  torch::Tensor out = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
+
+  auto A_ptr       = reinterpret_cast<const ElementInput*>(A.data_ptr());
+  auto B_ptr       = reinterpret_cast<const ElementInput*>(B.data_ptr());
+  auto scale_A_ptr = reinterpret_cast<const ElementScale*>(scale_A.data_ptr());
+  auto scale_B_ptr = reinterpret_cast<const ElementScale*>(scale_B.data_ptr());
+  auto out_ptr     = reinterpret_cast<ElementOutput*>(out.data_ptr());
+
+  // NOTE: currently this is not good for small M
+  if (M < 256)
+    cutlass_scaled_fp8_mm_dispatch<Shape<_64, _64, _128>>(
+        A_ptr, B_ptr, scale_A_ptr, scale_B_ptr, out_ptr, M, N, K);
+  else
+    cutlass_scaled_fp8_mm_dispatch<Shape<_128, _128, _128>>(
+        A_ptr, B_ptr, scale_A_ptr, scale_B_ptr, out_ptr, M, N, K);
+
+  return out;
 }
 
 TORCH_LIBRARY_IMPL(qtrain, CUDA, m)
