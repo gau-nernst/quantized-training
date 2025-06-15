@@ -17,35 +17,33 @@
 
 using namespace cute;
 
+using ElementD           = cutlass::bfloat16_t;
+constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
+
+using ArchTag            = cutlass::arch::Sm120;
+using OperatorClass      = cutlass::arch::OpClassBlockScaledTensorOp;
+using ElementAccumulator = float;
+
+using ThreadBlockShape = Shape<_128, _128, _128>;
+using ClusterShape     = Shape<_1, _1, _1>;
+
 #define DEFINE_FP4_MM(prefix)                                                                                                    \
   torch::Tensor prefix##fp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A, torch::Tensor scales_B)                 \
   {                                                                                                                              \
     int M = A.size(0);                                                                                                           \
     int K = A.size(1) * 2;                                                                                                       \
     int N = B.size(1);                                                                                                           \
-                                                                                                                                 \
     torch::Tensor D = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));                                                 \
                                                                                                                                  \
     using ElementAB = cutlass::prefix##_float4_t<cutlass::float_e2m1_t>;                                                         \
-                                                                                                                                 \
-    using ElementD = cutlass::bfloat16_t;                                                                                        \
-    using LayoutDTag = cutlass::layout::RowMajor;                                                                                \
-    constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;                                                      \
-                                                                                                                                 \
-    using ElementAccumulator = float;                                                                                            \
-    using ArchTag = cutlass::arch::Sm120;                                                                                        \
-    using OperatorClass = cutlass::arch::OpClassBlockScaledTensorOp;                                                             \
-                                                                                                                                 \
-    using ThreadBlockShape = Shape<_128, _128, _128>;                                                                            \
-    using ClusterShape = Shape<_1, _1, _1>;                                                                                      \
                                                                                                                                  \
     using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<                                        \
         ArchTag, OperatorClass,                                                                                                  \
         ThreadBlockShape, ClusterShape,                                                                                          \
         cutlass::epilogue::collective::EpilogueTileAuto,                                                                         \
         ElementAccumulator, ElementAccumulator,                                                                                  \
-        ElementD, LayoutDTag, AlignmentD,                                                                                        \
-        ElementD, LayoutDTag, AlignmentD,                                                                                        \
+        ElementD, cutlass::layout::RowMajor, AlignmentD,                                                                         \
+        ElementD, cutlass::layout::RowMajor, AlignmentD,                                                                         \
         cutlass::epilogue::collective::EpilogueScheduleAuto>::CollectiveOp;                                                      \
                                                                                                                                  \
     using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<                                            \
@@ -56,21 +54,21 @@ using namespace cute;
         ThreadBlockShape, ClusterShape,                                                                                          \
         cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>, \
         cutlass::gemm::collective::KernelScheduleAuto>::CollectiveOp;                                                            \
+                                                                                                                                 \
     using GemmKernel = cutlass::gemm::kernel::GemmUniversal<                                                                     \
         Shape<int, int, int, int>,                                                                                               \
         CollectiveMainloop,                                                                                                      \
         CollectiveEpilogue,                                                                                                      \
         void>;                                                                                                                   \
-                                                                                                                                 \
     using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;                                                        \
-    using Sm1xxBlkScaledConfig = typename Gemm::GemmKernel::CollectiveMainloop::Sm1xxBlkScaledConfig;                            \
                                                                                                                                  \
-    using DataType = typename ElementAB::DataType;                                                                               \
-    using ScaleFactorType = typename ElementAB::ScaleFactorType;                                                                 \
+    using Sm1xxBlkScaledConfig = typename GemmKernel::CollectiveMainloop::Sm1xxBlkScaledConfig;                                  \
+    using DataType             = typename ElementAB::DataType;                                                                   \
+    using ScaleFactorType      = typename ElementAB::ScaleFactorType;                                                            \
                                                                                                                                  \
-    auto stride_A = cutlass::make_cute_packed_stride(typename Gemm::GemmKernel::StrideA{}, {M, K, 1});                           \
-    auto stride_B = cutlass::make_cute_packed_stride(typename Gemm::GemmKernel::StrideB{}, {N, K, 1});                           \
-    auto stride_D = cutlass::make_cute_packed_stride(typename Gemm::GemmKernel::StrideD{}, {M, N, 1});                           \
+    auto stride_A = cutlass::make_cute_packed_stride(typename GemmKernel::StrideA{}, {M, K, 1});                                 \
+    auto stride_B = cutlass::make_cute_packed_stride(typename GemmKernel::StrideB{}, {N, K, 1});                                 \
+    auto stride_D = cutlass::make_cute_packed_stride(typename GemmKernel::StrideD{}, {M, N, 1});                                 \
                                                                                                                                  \
     auto layout_SFA = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(cute::make_shape(M, N, K, 1));                                \
     auto layout_SFB = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(cute::make_shape(M, N, K, 1));                                \
