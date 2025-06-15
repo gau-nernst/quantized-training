@@ -118,8 +118,8 @@ def nvfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
 
 
 def mxfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
-    assert A.ndim == 2 and A.dtype is torch.uint8 and A.is_contiguous()
-    assert B.ndim == 2 and B.dtype is torch.uint8 and B.T.is_contiguous()
+    assert A.ndim == 2 and A.dtype is torch.float4_e2m1fn_x2 and A.is_contiguous()
+    assert B.ndim == 2 and B.dtype is torch.float4_e2m1fn_x2 and B.T.is_contiguous()
     assert A.shape[1] == B.shape[0]
     return lib_ops.mxfp4_mm(A, B, scale_A, scale_B)
 
