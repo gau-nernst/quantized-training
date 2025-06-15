@@ -179,7 +179,7 @@ if __name__ == "__main__":
         step = ckpt["step"]
 
     log_interval = 50
-    pbar = tqdm(total=args.n_steps, initial=step, dynamic_ncols=True, disable=is_master == False)
+    pbar = tqdm(total=args.n_steps, initial=step, dynamic_ncols=True, disable=not is_master)
     model.train()
     loss_fn = get_loss if is_fsdp else torch.compile(get_loss)
     time0 = time.time()

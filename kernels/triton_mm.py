@@ -384,7 +384,10 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
     M, K = A.shape
     _, N = B.shape
     C = torch.empty(M, N, device=A.device, dtype=row_scale.dtype)
-    grid = lambda meta: (triton.cdiv(meta["M"], meta["BLOCK_M"]) * triton.cdiv(meta["N"], meta["BLOCK_N"]),)
+
+    def grid(meta):
+        return (triton.cdiv(meta["M"], meta["BLOCK_M"]) * triton.cdiv(meta["N"], meta["BLOCK_N"]),)
+
     _scaled_mm_kernel[grid](
         A,
         B,
@@ -409,7 +412,10 @@ def _(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor):
     M, K = A.shape
     _, N = B.shape
     C = torch.empty(M, N, device=A.device, dtype=scale_A.dtype)
-    grid = lambda meta: (triton.cdiv(meta["M"], meta["BLOCK_M"]) * triton.cdiv(meta["N"], meta["BLOCK_N"]),)
+
+    def grid(meta):
+        return (triton.cdiv(meta["M"], meta["BLOCK_M"]) * triton.cdiv(meta["N"], meta["BLOCK_N"]),)
+
     QUANT_BLOCK_K = A.shape[1] // scale_A.shape[1]
     _tile_scaled_mm_kernel[grid](
         A,

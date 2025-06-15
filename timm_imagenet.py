@@ -62,7 +62,7 @@ def evaluate_model(model, args):
     all_labels = []
     all_preds = []
 
-    for imgs, labels in tqdm(val_dloader, dynamic_ncols=True, desc=f"Evaluating"):
+    for imgs, labels in tqdm(val_dloader, dynamic_ncols=True, desc="Evaluating"):
         all_labels.append(labels.clone())
         all_preds.append(torch.compile(model_predict)(model, imgs.bfloat16().cuda()).cpu())
 

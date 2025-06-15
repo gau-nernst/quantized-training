@@ -106,7 +106,7 @@ def evaluate_model(model, args):
     all_labels = []
     all_preds = []
 
-    for batch in tqdm(val_dloader, dynamic_ncols=True, desc=f"Evaluating"):
+    for batch in tqdm(val_dloader, dynamic_ncols=True, desc="Evaluating"):
         all_labels.append(batch["label"].clone())
 
         images = batch["image"].to(dtype=torch.bfloat16, device="cuda")
