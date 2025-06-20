@@ -71,10 +71,9 @@ def quantize_mxfp4(x: Tensor):
     scales = block_scales_bits.to(torch.int8).view(torch.float8_e8m0fnu)
 
     # TODO: division by bit manipulation?
-    x_f32_blocks = x_f32_blocks / (block_scales_bits << 23).view(torch.float32)
+    x_f32_blocks = x_f32_blocks / (block_scales_bits.unsqueeze(-1) << 23).view(torch.float32)
     xq_f4x2_blocks = fp32_to_fp4e2m1x2(x_f32_blocks)
-    print(f"{xq_f4x2_blocks.shape=}")
-    xq_f4x2 = xq_f4x2_blocks.view(x.shape[0], -1)
+    xq_f4x2 = xq_f4x2_blocks.view(x.shape[0], -1).view(torch.float4_e2m1fn_x2)
 
     return xq_f4x2, scales
 
