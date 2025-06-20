@@ -111,9 +111,11 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
 
 # TODO: check scale_A/scale_B shapes
 def nvfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
-    assert A.ndim == 2 and A.dtype is torch.uint8 and A.is_contiguous()
-    assert B.ndim == 2 and B.dtype is torch.uint8 and B.T.is_contiguous()
+    assert A.ndim == 2 and A.dtype is torch.float4_e2m1fn_x2 and A.is_contiguous()
+    assert B.ndim == 2 and B.dtype is torch.float4_e2m1fn_x2 and B.T.is_contiguous()
     assert A.shape[1] == B.shape[0]
+    assert scale_A.dtype == torch.float8_e4m3fn
+    assert scale_B.dtype == torch.float8_e4m3fn
     return lib_ops.nvfp4_mm(A, B, scale_A, scale_B)
 
 
@@ -121,6 +123,8 @@ def mxfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
     assert A.ndim == 2 and A.dtype is torch.float4_e2m1fn_x2 and A.is_contiguous()
     assert B.ndim == 2 and B.dtype is torch.float4_e2m1fn_x2 and B.T.is_contiguous()
     assert A.shape[1] == B.shape[0]
+    assert scale_A.dtype == torch.float8_e8m0fnu
+    assert scale_B.dtype == torch.float8_e8m0fnu
     return lib_ops.mxfp4_mm(A, B, scale_A, scale_B)
 
 

@@ -5,7 +5,7 @@ import torch
 from torch import Tensor
 from triton.testing import do_bench
 
-from kernels import _triton_mm, int4_mm, int8_mm, scaled_int4_mm, scaled_mm, fp8_mm, scaled_fp8_mm
+from kernels import _triton_mm, int4_mm, int8_mm, scaled_int4_mm, scaled_mm, fp8_mm, scaled_fp8_mm, mxfp4_mm, nvfp4_mm
 
 
 def pack_int4(x: torch.Tensor) -> torch.Tensor:
@@ -47,6 +47,7 @@ if __name__ == "__main__":
 
     torch.set_default_device("cuda")
     torch.manual_seed(2025 * 2024)
+    COMPUTE_CAPABILITY = torch.cuda.get_device_capability()
 
     # we need to do this to force inductor to use triton's implementation of torch._scaled_mm() on devices with num_sms<68
     # TODO: try inductor Aten and Cutlass as well?
@@ -107,7 +108,7 @@ if __name__ == "__main__":
         )
 
         # FP8
-        if torch.cuda.get_device_capability() >= (8, 9):
+        if COMPUTE_CAPABILITY >= (8, 9):
             A_f8 = to_layout(torch.randn(M, K).to(torch.float8_e4m3fn), args.a_column_major)
             B_f8 = to_layout(torch.randn(K, N).to(torch.float8_e4m3fn), args.b_column_major)
 
@@ -152,7 +153,22 @@ if __name__ == "__main__":
             i4_cutlass_tflops = 0
             scaled_i4_cutlass_tflops = 0
 
-        # TODO: FP4
+        # FP4
+        if COMPUTE_CAPABILITY == (12, 0) and not args.a_column_major and args.b_column_major:
+            A_fp4 = torch.randint(255, size=(M, K // 2), dtype=torch.uint8).view(torch.float4_e2m1fn_x2)
+            B_fp4 = torch.randint(255, size=(N, K // 2), dtype=torch.uint8).view(torch.float4_e2m1fn_x2).T
+
+            scale_A_mx = torch.randn(M, K // 32).to(torch.float8_e8m0fnu)
+            scale_B_mx = torch.randn(N, K // 32).to(torch.float8_e8m0fnu)
+            mxfp4_cutlass_tflops = bench_tflops(mxfp4_mm, None, A_fp4, B_fp4, scale_A_mx, scale_B_mx)
+
+            scale_A_nv = torch.randn(M, K // 16).to(torch.float8_e4m3fn)
+            scale_B_nv = torch.randn(N, K // 16).to(torch.float8_e4m3fn)
+            nvfp4_cutlass_tflops = bench_tflops(nvfp4_mm, None, A_fp4, B_fp4, scale_A_nv, scale_B_nv)
+
+        else:
+            mxfp4_cutlass_tflops = 0
+            nvfp4_cutlass_tflops = 0
 
         data.append(
             [
@@ -171,6 +187,8 @@ if __name__ == "__main__":
                 scaled_i8_triton_tflops,
                 tile_scaled_i8_triton_tflops,
                 scaled_i4_cutlass_tflops,
+                mxfp4_cutlass_tflops,
+                nvfp4_cutlass_tflops,
             ]
         )
 
@@ -201,6 +219,8 @@ if __name__ == "__main__":
                 i8_tflops,  # scaled triton
                 i8_tflops,  # tile-scaled triton
                 i4_tflops,  # scaled cutlass
+                f4_tflops,  # mxfp4 cutlass
+                f4_tflops,  # nvfp4 cutlass
             ]
         )
 
@@ -223,6 +243,8 @@ if __name__ == "__main__":
             "Triton scaled INT8",
             "Triton tile-scaled INT8",
             "Cutlass scaled INT4",
+            "Cutlass MXFP4",
+            "Cutlass NVFP4",
         ],
     )
     print(df.round(2).T.to_markdown())
