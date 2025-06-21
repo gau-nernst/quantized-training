@@ -1,11 +1,15 @@
+#include <torch/library.h>
+#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/cuda/CUDAUtils.h>
+#include <ATen/cuda/CUDAContext.h>
+
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm_universal.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/epilogue/threadblock/fusion/visitors.hpp"
 #include "cutlass/gemm/kernel/default_gemm_universal_with_visitor.h"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
 
 
 #define CUTLASS_CHECK(status) \
@@ -21,11 +25,11 @@ using ArchTag            = cutlass::arch::Sm89;
 
 constexpr int AlignmentOutput = 128 / cutlass::sizeof_bits<ElementOutput>::value;
 
-torch::Tensor fp8_mm(torch::Tensor A, torch::Tensor B) {
+at::Tensor fp8_mm(at::Tensor A, at::Tensor B) {
   int M = A.size(0);
   int K = A.size(1);
   int N = B.size(1);
-  torch::Tensor C = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
+  at::Tensor C = at::empty({M, N}, A.options().dtype(at::kBFloat16));
 
   using ElementInput = cutlass::float_e4m3_t;
 
@@ -153,22 +157,22 @@ void scaled_fp8_mm_kernel(
   CUTLASS_CHECK(gemm(args, nullptr, stream));
 }
 
-torch::Tensor scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
+at::Tensor scaled_fp8_mm(at::Tensor A, at::Tensor B, at::Tensor row_scale, at::Tensor col_scale) {
   int M = A.size(0);
   int K = A.size(1);
   int N = B.size(1);
-  torch::Tensor out = torch::empty({M, N}, row_scale.options().dtype(torch::kBFloat16));
+  at::Tensor out = at::empty({M, N}, row_scale.options().dtype(at::kBFloat16));
 
   const ElementScale *row_scale_ptr = reinterpret_cast<ElementScale *>(row_scale.data_ptr());
   const ElementScale *col_scale_ptr = reinterpret_cast<ElementScale *>(col_scale.data_ptr());
   ElementOutput *out_ptr            = reinterpret_cast<ElementOutput *>(out.data_ptr());
 
-  if (A.dtype() == torch::kFloat8_e4m3fn) {
+  if (A.dtype() == at::kFloat8_e4m3fn) {
     using ElementInput        = cutlass::float_e4m3_t;
     const ElementInput *A_ptr = reinterpret_cast<ElementInput *>(A.data_ptr());
     const ElementInput *B_ptr = reinterpret_cast<ElementInput *>(B.data_ptr());
     scaled_fp8_mm_kernel(A_ptr, B_ptr, row_scale_ptr, col_scale_ptr, out_ptr, M, N, K);
-  } else if (A.dtype() == torch::kFloat8_e5m2) {
+  } else if (A.dtype() == at::kFloat8_e5m2) {
     using ElementInput        = cutlass::float_e5m2_t;
     const ElementInput *A_ptr = reinterpret_cast<ElementInput *>(A.data_ptr());
     const ElementInput *B_ptr = reinterpret_cast<ElementInput *>(B.data_ptr());

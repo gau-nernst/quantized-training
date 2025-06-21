@@ -1,11 +1,15 @@
+#include <torch/library.h>
+#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/cuda/CUDAUtils.h>
+#include <ATen/cuda/CUDAContext.h>
+
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm_universal.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/epilogue/threadblock/fusion/visitors.hpp"
 #include "cutlass/gemm/kernel/default_gemm_universal_with_visitor.h"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
 
 
 #define CUTLASS_CHECK(status) \
@@ -25,11 +29,11 @@ constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
 
 
 // we will do input checks in python. A and B are stored as int8
-torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
+at::Tensor int4_mm(at::Tensor A, at::Tensor B) {
   int M = A.size(0);
   int K = A.size(1) * 2;
   int N = B.size(1);
-  torch::Tensor C = torch::empty({M, N}, A.options().dtype(torch::kInt32));
+  at::Tensor C = at::empty({M, N}, A.options().dtype(at::kInt));
 
   // some configs for int4 mma
   // https://github.com/NVIDIA/cutlass/blob/v3.5.1/test/unit/gemm/device/gemm_s4t_s4n_s32t_tensor_op_s32_sm80.cu
@@ -64,11 +68,11 @@ torch::Tensor int4_mm(torch::Tensor A, torch::Tensor B) {
 // this function is based on the following cutlass example
 // https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/ampere_gemm_universal_streamk_broadcast.cu
 // also with the help of emitted code from cutlass Python
-torch::Tensor scaled_int4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row_scale, torch::Tensor col_scale) {
+at::Tensor scaled_int4_mm(at::Tensor A, at::Tensor B, at::Tensor row_scale, at::Tensor col_scale) {
   int M = A.size(0);
   int K = A.size(1) * 2;
   int N = B.size(1);
-  torch::Tensor C = torch::empty({M, N}, row_scale.options());
+  at::Tensor C = at::empty({M, N}, row_scale.options());
 
   using ElementC        = cutlass::bfloat16_t;
   using ElementEpilogue = float;
@@ -131,11 +135,11 @@ torch::Tensor scaled_int4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor row
   >::GemmKernel;
   using DeviceGemm = cutlass::gemm::device::GemmUniversalAdapter<EVTKernel>;
 
-  const ElementA *A_ptr         = reinterpret_cast<ElementA *>(A.data_ptr<int8_t>());
-  const ElementB *B_ptr         = reinterpret_cast<ElementB *>(B.data_ptr<int8_t>());
-  const ElementC *col_scale_ptr = reinterpret_cast<ElementC *>(col_scale.data_ptr<torch::BFloat16>());
-  const ElementC *row_scale_ptr = reinterpret_cast<ElementC *>(row_scale.data_ptr<torch::BFloat16>());
-  ElementC *C_ptr               = reinterpret_cast<ElementC *>(C.data_ptr<torch::BFloat16>());
+  const ElementA *A_ptr         = reinterpret_cast<ElementA *>(A.data_ptr());
+  const ElementB *B_ptr         = reinterpret_cast<ElementB *>(B.data_ptr());
+  const ElementC *col_scale_ptr = reinterpret_cast<ElementC *>(col_scale.data_ptr());
+  const ElementC *row_scale_ptr = reinterpret_cast<ElementC *>(row_scale.data_ptr());
+  ElementC *C_ptr               = reinterpret_cast<ElementC *>(C.data_ptr());
 
   typename EVTOutput::Arguments callback_args{
     {

@@ -1,47 +1,15 @@
-import os
 from pathlib import Path
 
 import torch
-import torch.utils.cpp_extension
 from torch import Tensor
 
 from ._lib import lib, lib_ops
 
 CURRENT_DIR = Path(__file__).parent
 
-extra_include_paths = [
-    str(CURRENT_DIR / "cutlass/include"),
-    str(CURRENT_DIR / "cutlass/tools/util/include"),
-]
 
-
-# TODO: figure out a way to remove default -gencode=...
-def load_extension(major: int, minor: int, a: bool = False):
-    if torch.cuda.get_device_capability() >= (major, minor):
-        os.environ["TORCH_CUDA_ARCH_LIST"] = f"{major}.{minor}"
-        cc = f"{major}{minor}"
-
-        if a:
-            os.environ["TORCH_CUDA_ARCH_LIST"] += "a"
-            cc += "a"
-
-        os.environ["TORCH_CUDA_ARCH_LIST"] += "+PTX"
-
-        torch.utils.cpp_extension.load(
-            f"cutlass_sm{cc}",
-            sources=list(CURRENT_DIR.glob(f"cutlass_sm{cc}_*.cu")),
-            # extra_cuda_cflags=["-DCUTLASS_DEBUG_TRACE_LEVEL=1"],
-            extra_include_paths=extra_include_paths,
-            verbose=True,
-            is_python_module=False,
-        )
-
-        del os.environ["TORCH_CUDA_ARCH_LIST"]
-
-
-load_extension(8, 0)
-load_extension(8, 9)
-load_extension(12, 0, a=True)
+for shared_lib in CURRENT_DIR.glob("*.so"):
+    torch.ops.load_library(shared_lib)
 
 
 lib.define("int4_mm(Tensor A, Tensor B) -> Tensor")

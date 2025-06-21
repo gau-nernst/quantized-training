@@ -7,3 +7,6 @@ runs/
 *.bin
 *.model
 COMPLETE
+build/
+*.egg-info/
+*.so

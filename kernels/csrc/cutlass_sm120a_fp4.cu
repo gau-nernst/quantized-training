@@ -1,5 +1,11 @@
 // CUTLASS example 79
 
+#include <torch/library.h>
+#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/cuda/CUDAUtils.h>
+#include <ATen/cuda/CUDAContext.h>
+
 #include "cutlass/cutlass.h"
 #include "cute/tensor.hpp"
 #include "cutlass/detail/sm100_blockscaled_layout.hpp"
@@ -9,8 +15,6 @@
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/util/packed_stride.hpp"
 
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
 
 #define CUTLASS_CHECK(status) \
   TORCH_CHECK(status == cutlass::Status::kSuccess, "cutlass error: ", cutlassGetStatusString(status))
@@ -30,12 +34,12 @@ using ClusterShape = Shape<_1, _1, _1>;
 constexpr int AlignmentOutput = 128 / cutlass::sizeof_bits<ElementOutput>::value;
 // constexpr auto RoundStyle     = cutlass::FloatRoundStyle::round_to_nearest;
 
-torch::Tensor mxfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A, torch::Tensor scales_B)
+at::Tensor mxfp4_mm(at::Tensor A, at::Tensor B, at::Tensor scales_A, at::Tensor scales_B)
 {
   int M = A.size(0);
   int K = A.size(1) * 2;
   int N = B.size(1);
-  torch::Tensor D = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
+  at::Tensor D = at::empty({M, N}, A.options().dtype(at::kBFloat16));
 
   using ElementInput = cutlass::mx_float4_t<cutlass::float_e2m1_t>;
 
@@ -100,7 +104,7 @@ torch::Tensor mxfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A,
   CUTLASS_CHECK(gemm.can_implement(arguments));
 
   long workspace_size = Gemm::get_workspace_size(arguments);
-  torch::Tensor workspace = torch::empty({workspace_size}, A.options().dtype(torch::kByte));
+  at::Tensor workspace = at::empty({workspace_size}, A.options().dtype(at::kByte));
   auto stream = at::cuda::getCurrentCUDAStream();
 
   CUTLASS_CHECK(gemm.initialize(arguments, workspace.data_ptr(), stream));
@@ -109,12 +113,12 @@ torch::Tensor mxfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A,
   return D;
 }
 
-torch::Tensor nvfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A, torch::Tensor scales_B, torch::Tensor global_scale)
+at::Tensor nvfp4_mm(at::Tensor A, at::Tensor B, at::Tensor scales_A, at::Tensor scales_B, at::Tensor global_scale)
 {
   int M = A.size(0);
   int K = A.size(1) * 2;
   int N = B.size(1);
-  torch::Tensor D = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
+  at::Tensor D = at::empty({M, N}, A.options().dtype(at::kBFloat16));
 
   using ElementInput = cutlass::nv_float4_t<cutlass::float_e2m1_t>;
 
@@ -181,7 +185,7 @@ torch::Tensor nvfp4_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scales_A,
   CUTLASS_CHECK(gemm.can_implement(arguments));
 
   long workspace_size = Gemm::get_workspace_size(arguments);
-  torch::Tensor workspace = torch::empty({workspace_size}, A.options().dtype(torch::kByte));
+  at::Tensor workspace = at::empty({workspace_size}, A.options().dtype(at::kByte));
   auto stream = at::cuda::getCurrentCUDAStream();
 
   CUTLASS_CHECK(gemm.initialize(arguments, workspace.data_ptr(), stream));

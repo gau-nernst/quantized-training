@@ -1,5 +1,11 @@
 // https://github.com/NVIDIA/cutlass/blob/v3.9.2/test/unit/gemm/device/sm120_tensorop_gemm/sm120_gemm_f8_f8_f32_tensor_op.cu
 
+#include <torch/library.h>
+#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/cuda/CUDAUtils.h>
+#include <ATen/cuda/CUDAContext.h>
+
 #include "cutlass/cutlass.h"
 #include "cute/tensor.hpp"
 #include "cutlass/epilogue/collective/collective_builder.hpp"
@@ -7,9 +13,6 @@
 #include "cutlass/gemm/collective/collective_builder.hpp"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/util/packed_stride.hpp"
-
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
 
 #define CUTLASS_CHECK(status) \
   TORCH_CHECK(status == cutlass::Status::kSuccess, "cutlass error: ", cutlassGetStatusString(status))
@@ -29,13 +32,13 @@ using OperatorClass = cutlass::arch::OpClassTensorOp;
 
 using ClusterShape = Shape<_1, _1, _1>;
 
-torch::Tensor cutlass_fp8_mm(torch::Tensor A, torch::Tensor B)
+at::Tensor cutlass_fp8_mm(at::Tensor A, at::Tensor B)
 {
   int M = A.size(0);
   int K = A.size(1);
   int N = B.size(1);
 
-  torch::Tensor D = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
+  at::Tensor D = at::empty({M, N}, A.options().dtype(at::kBFloat16));
 
   using TileShape = Shape<_128, _128, _128>;
 
@@ -91,7 +94,7 @@ torch::Tensor cutlass_fp8_mm(torch::Tensor A, torch::Tensor B)
   CUTLASS_CHECK(gemm.can_implement(arguments));
 
   long workspace_size = Gemm::get_workspace_size(arguments);
-  torch::Tensor workspace = torch::empty({workspace_size}, A.options().dtype(torch::kByte));
+  at::Tensor workspace = at::empty({workspace_size}, A.options().dtype(at::kByte));
   auto stream = at::cuda::getCurrentCUDAStream();
 
   CUTLASS_CHECK(gemm.initialize(arguments, workspace.data_ptr(), stream));
@@ -189,12 +192,12 @@ void cutlass_scaled_fp8_mm_dispatch(
   CUTLASS_CHECK(gemm.run(stream));
 }
 
-torch::Tensor cutlass_scaled_fp8_mm(torch::Tensor A, torch::Tensor B, torch::Tensor scale_A, torch::Tensor scale_B)
+at::Tensor cutlass_scaled_fp8_mm(at::Tensor A, at::Tensor B, at::Tensor scale_A, at::Tensor scale_B)
 {
   int M = A.size(0);
   int K = A.size(1);
   int N = B.size(1);
-  torch::Tensor out = torch::empty({M, N}, A.options().dtype(torch::kBFloat16));
+  at::Tensor out = at::empty({M, N}, A.options().dtype(at::kBFloat16));
 
   auto A_ptr       = reinterpret_cast<const ElementInput*>(A.data_ptr());
   auto B_ptr       = reinterpret_cast<const ElementInput*>(B.data_ptr());
