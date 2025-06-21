@@ -1,5 +1,20 @@
 import torch
 from torch import Tensor
+import triton
+import triton.language as tl
+
+
+DTYPE_AMAX_LUT = {
+    torch.float4_e2m1fn_x2: 6.0,
+    torch.float8_e4m3fn: 448.0,
+    torch.float8_e5m2: 57_344.0,
+}
+
+DTYPE_POW2_AMAX_LUT = {
+    torch.float4_e2m1fn_x2: 4.0,
+    torch.float8_e4m3fn: 256.0,
+    torch.float8_e5m2: 32_768.0,
+}
 
 
 # https://github.com/NVIDIA/cutlass/blob/v3.9.2/media/docs/cpp/blackwell_functionality.md#scale-factor-layouts
@@ -11,9 +26,10 @@ def pack_block_scales(scales: Tensor):
 
 
 # https://docs.nvidia.com/cuda/cublas/index.html#d-block-quantization
-def absmax_to_mx_scales_nvidia(absmax: Tensor):
+def absmax_to_mx_scales_nvidia(absmax: Tensor, dtype: torch.dtype):
     assert absmax.dtype == torch.float32
-    scales = absmax / 6.0
+    dtype_amax = DTYPE_AMAX_LUT[dtype]
+    scales = absmax / dtype_amax
     bits = scales.view(torch.int32)
     exponent = bits >> 23  # x > 0, so don't need to mask sign bit
     mantissa = bits & 0x7F_FFFF
@@ -25,10 +41,39 @@ def absmax_to_mx_scales_nvidia(absmax: Tensor):
 
 
 # https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
-def absmax_to_mx_scales_ocp(absmax: Tensor):
+def absmax_to_mx_scales_ocp(absmax: Tensor, dtype: torch.dtype):
     assert absmax.dtype == torch.float32
     # return (absmax.view(torch.int32) >> 23).clip(2) - 2
-    return ((absmax.view(torch.int32) & 0x7F80_0000).view(torch.float32) / 4.0).view(torch.int32) >> 23
+    dtype_pow2_amax = DTYPE_POW2_AMAX_LUT[dtype]
+    return ((absmax.view(torch.int32) & 0x7F80_0000).view(torch.float32) / dtype_pow2_amax).view(torch.int32) >> 23
+
+
+@triton.jit
+def fp32x8_to_fp4e2m1x8_triton(x: tl.tensor):
+    tl.static_assert(x.dtype == tl.int64)  # view fp32x2 as int64
+    return tl.inline_asm_elementwise(
+        asm="""
+        {
+        .reg .b32 lo, hi;
+        .reg .b8 byte0, byte1, byte2, byte3;
+
+        mov.b64 {lo, hi}, $1;
+        cvt.rn.satfinite.e2m1x2.f32 byte0, hi, lo;
+        mov.b64 {lo, hi}, $2;
+        cvt.rn.satfinite.e2m1x2.f32 byte1, hi, lo;
+        mov.b64 {lo, hi}, $3;
+        cvt.rn.satfinite.e2m1x2.f32 byte2, hi, lo;
+        mov.b64 {lo, hi}, $4;
+        cvt.rn.satfinite.e2m1x2.f32 byte3, hi, lo;
+        mov.b32 $0, {byte0, byte1, byte2, byte3};
+        }
+        """,
+        constraints="=r,l,l,l,l",
+        args=(x,),
+        dtype=tl.int8,
+        is_pure=True,
+        pack=4,
+    )
 
 
 def fp32_to_fp4e2m1x2(x: Tensor):
@@ -62,18 +107,34 @@ def fp32_to_fp4e2m1x2(x: Tensor):
     return f4_e2m1x2.view(torch.float4_e2m1fn_x2)
 
 
+def quantize_mxfp8(x: Tensor, dtype: torch.dtype):
+    assert dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+    x_f32_blocks = x.float().unflatten(-1, (-1, 32))  # [M, N/32, 32]
+    blocks_absmax = x_f32_blocks.abs().amax(dim=-1)  # [M, N/32]
+
+    block_scales_bits = absmax_to_mx_scales_ocp(blocks_absmax, dtype)
+    scales = block_scales_bits.to(torch.int8).view(torch.float8_e8m0fnu)
+
+    # TODO: division by bit manipulation?
+    x_f32_blocks = x_f32_blocks / (block_scales_bits.unsqueeze(-1) << 23).view(torch.float32)
+    xq_f8 = x_f32_blocks.to(dtype).view(x.shape)
+
+    return xq_f8, scales
+
+
 def quantize_mxfp4(x: Tensor):
     x_f32_blocks = x.float().unflatten(-1, (-1, 32))  # [M, N/32, 32]
     blocks_absmax = x_f32_blocks.abs().amax(dim=-1)  # [M, N/32]
 
-    # block_scales_bits = absmax_to_mx_scales_nvidia(blocks_absmax)
-    block_scales_bits = absmax_to_mx_scales_ocp(blocks_absmax)
+    dtype = torch.float4_e2m1fn_x2
+    # block_scales_bits = absmax_to_mx_scales_nvidia(blocks_absmax, dtype)
+    block_scales_bits = absmax_to_mx_scales_ocp(blocks_absmax, dtype)
     scales = block_scales_bits.to(torch.int8).view(torch.float8_e8m0fnu)
 
     # TODO: division by bit manipulation?
     x_f32_blocks = x_f32_blocks / (block_scales_bits.unsqueeze(-1) << 23).view(torch.float32)
     xq_f4x2_blocks = fp32_to_fp4e2m1x2(x_f32_blocks)
-    xq_f4x2 = xq_f4x2_blocks.view(x.shape[0], -1).view(torch.float4_e2m1fn_x2)
+    xq_f4x2 = xq_f4x2_blocks.view(x.shape[0], -1).view(dtype)
 
     return xq_f4x2, scales
 
@@ -113,8 +174,20 @@ def dequantize_mxfp4(xq: Tensor, scales: Tensor):
     return x_scaled.view(M, N)
 
 
-if __name__ == "__main__":
-    x = torch.randn(512, 256)
-    xq, scales = quantize_mxfp4(x)
-    x_qdq = dequantize_mxfp4(xq, scales)
-    assert x_qdq.shape == x.shape
+# https://docs.nvidia.com/cuda/cublas/index.html#d-block-quantization
+def quantize_nvfp4(x: Tensor):
+    x_f32_blocks = x.float().unflatten(-1, (-1, 32))  # [M, N/32, 32]
+    absmax = x_f32_blocks.abs().amax()
+
+    data_dtype = torch.float4_e2m1fn_x2
+    scale_dtype = torch.float8_e4m3fn
+    scale_in_D = DTYPE_AMAX_LUT[data_dtype] * DTYPE_AMAX_LUT[scale_dtype] / absmax
+
+    blocks_absmax = x_f32_blocks.abs().amax(dim=-1)  # [M, N/32]
+    scales = (blocks_absmax * scale_in_D).to(scale_dtype)
+
+    x_f32_blocks = x_f32_blocks * (scale_in_D / scales.float().unsqueeze(-1))
+    xq_f4x2_blocks = fp32_to_fp4e2m1x2(x_f32_blocks)
+    xq_f4x2 = xq_f4x2_blocks.view(x.shape[0], -1).view(data_dtype)
+
+    return xq_f4x2, scales
