@@ -172,7 +172,7 @@ at::Tensor scaled_int4_mm(at::Tensor A, at::Tensor B, at::Tensor row_scale, at::
   return C;
 }
 
-TORCH_LIBRARY_IMPL(qtrain, CUDA, m) {
-  m.impl("qtrain::int4_mm", &int4_mm);
-  m.impl("qtrain::scaled_int4_mm", &scaled_int4_mm);
+TORCH_LIBRARY_IMPL(gn_kernels, CUDA, m) {
+  m.impl("gn_kernels::int4_mm", &int4_mm);
+  m.impl("gn_kernels::scaled_int4_mm", &scaled_int4_mm);
 }

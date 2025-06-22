@@ -184,7 +184,7 @@ at::Tensor scaled_fp8_mm(at::Tensor A, at::Tensor B, at::Tensor row_scale, at::T
   return out;
 }
 
-TORCH_LIBRARY_IMPL(qtrain, CUDA, m) {
-  m.impl("qtrain::fp8_mm", &fp8_mm);
-  m.impl("qtrain::scaled_fp8_mm", &scaled_fp8_mm);
+TORCH_LIBRARY_IMPL(gn_kernels, CUDA, m) {
+  m.impl("gn_kernels::fp8_mm", &fp8_mm);
+  m.impl("gn_kernels::scaled_fp8_mm", &scaled_fp8_mm);
 }

@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 from triton.testing import do_bench
 
-from kernels import _triton_conv2d, int8_conv2d
+from gn_kernels import _triton_conv2d, int8_conv2d
 
 
 def bench_f(f, *args, **kwargs):

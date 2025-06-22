@@ -216,8 +216,8 @@ at::Tensor cutlass_scaled_fp8_mm(at::Tensor A, at::Tensor B, at::Tensor scale_A,
   return out;
 }
 
-TORCH_LIBRARY_IMPL(qtrain, CUDA, m)
+TORCH_LIBRARY_IMPL(gn_kernels, CUDA, m)
 {
-  m.impl("qtrain::cutlass_fp8_mm", &cutlass_fp8_mm);
-  m.impl("qtrain::cutlass_scaled_fp8_mm", &cutlass_scaled_fp8_mm);
+  m.impl("gn_kernels::cutlass_fp8_mm", &cutlass_fp8_mm);
+  m.impl("gn_kernels::cutlass_scaled_fp8_mm", &cutlass_scaled_fp8_mm);
 }

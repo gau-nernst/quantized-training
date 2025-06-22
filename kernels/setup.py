@@ -3,11 +3,12 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 from pathlib import Path
 
 CURRENT_DIR = Path(__file__).parent
+NAME = "gn_kernels"
 
 
 def get_extension(arch: str):
     return CUDAExtension(
-        name=f"kernels.cutlass_sm{arch}",
+        name=f"{NAME}.cutlass_sm{arch}",
         sources=list(CURRENT_DIR.glob(f"csrc/cutlass_sm{arch}_*.cu")),
         py_limited_api=True,
         extra_compile_args=dict(
@@ -24,7 +25,7 @@ def get_extension(arch: str):
 
 
 setup(
-    name="kernels",
+    name=NAME,
     packages=find_packages(),
     version="0.1",
     ext_modules=[

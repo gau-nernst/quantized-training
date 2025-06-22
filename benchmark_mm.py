@@ -5,7 +5,17 @@ import torch
 from torch import Tensor
 from triton.testing import do_bench
 
-from kernels import _triton_mm, int4_mm, int8_mm, scaled_int4_mm, scaled_mm, fp8_mm, scaled_fp8_mm, mxfp4_mm, nvfp4_mm
+from gn_kernels import (
+    _triton_mm,
+    int4_mm,
+    int8_mm,
+    scaled_int4_mm,
+    scaled_mm,
+    fp8_mm,
+    scaled_fp8_mm,
+    mxfp4_mm,
+    nvfp4_mm,
+)
 
 
 def pack_int4(x: torch.Tensor) -> torch.Tensor:
@@ -164,7 +174,8 @@ if __name__ == "__main__":
 
             scale_A_nv = torch.randn(M, K // 16).to(torch.float8_e4m3fn)
             scale_B_nv = torch.randn(N, K // 16).to(torch.float8_e4m3fn)
-            nvfp4_cutlass_tflops = bench_tflops(nvfp4_mm, None, A_fp4, B_fp4, scale_A_nv, scale_B_nv)
+            global_scale = torch.tensor(1.0)
+            nvfp4_cutlass_tflops = bench_tflops(nvfp4_mm, None, A_fp4, B_fp4, scale_A_nv, scale_B_nv, global_scale)
 
         else:
             mxfp4_cutlass_tflops = 0

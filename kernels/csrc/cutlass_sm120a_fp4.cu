@@ -194,8 +194,8 @@ at::Tensor nvfp4_mm(at::Tensor A, at::Tensor B, at::Tensor scales_A, at::Tensor 
   return D;
 }
 
-TORCH_LIBRARY_IMPL(qtrain, CUDA, m)
+TORCH_LIBRARY_IMPL(gn_kernels, CUDA, m)
 {
-  m.impl("qtrain::mxfp4_mm", &mxfp4_mm);
-  m.impl("qtrain::nvfp4_mm", &nvfp4_mm);
+  m.impl("gn_kernels::mxfp4_mm", &mxfp4_mm);
+  m.impl("gn_kernels::nvfp4_mm", &nvfp4_mm);
 }

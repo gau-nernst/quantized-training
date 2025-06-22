@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from kernels import scaled_mm
+from gn_kernels import scaled_mm
 
 aten = torch.ops.aten
 

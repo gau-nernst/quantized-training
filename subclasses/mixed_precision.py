@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torch.utils._pytree as pytree
 from torch import Tensor, nn
 
-from kernels import scaled_int4_mm, scaled_mm
+from gn_kernels import scaled_int4_mm, scaled_mm
 
 from .int8 import quantize_int8
 
