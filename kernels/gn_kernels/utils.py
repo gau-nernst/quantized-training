@@ -173,7 +173,6 @@ def quantize_nvfp4_triton_kernel(x_ptr, tensor_scale_ptr, q_ptr, s_ptr, stride_x
 
     offs_m = pid_m * 128 + tl.arange(0, 128)[:, None]
     offs_n = pid_n * 64 + tl.arange(0, 64)[None, :]
-
     x = tl.load(x_ptr + offs_m * stride_xm + offs_n * stride_xn)  # [128, 64]
     x_blocks = x.to(tl.float32).reshape(128, 4, 16)  # [128, 4, 16]
 
@@ -186,9 +185,9 @@ def quantize_nvfp4_triton_kernel(x_ptr, tensor_scale_ptr, q_ptr, s_ptr, stride_x
 
     # NVIDIA layout
     packed_scales = scales.reshape(4, 32, 4).permute(1, 0, 2).reshape(32, 16)
-    offs_m = pid_m * 32 + tl.arange(0, 32)[:, None]
-    offs_n = pid_n * 16 + tl.arange(0, 16)[None, :]
-    tl.store(s_ptr + offs_m * (N // 4) + offs_n, packed_scales)
+    offs_m = tl.arange(0, 32)[:, None]
+    offs_n = tl.arange(0, 16)[None, :]
+    tl.store(s_ptr + (pid_m * tl.num_programs(0) + pid_n) * (32 * 16) + offs_m * 16 + offs_n, packed_scales)
 
     x_blocks = x_blocks / tl.maximum(scales.to(tl.float32)[:, :, None] * tensor_scale, 1e-12)
     x_fp4x2 = tl.inline_asm_elementwise(
