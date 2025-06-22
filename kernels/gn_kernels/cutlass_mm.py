@@ -18,8 +18,8 @@ lib.define("fp8_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("cutlass_fp8_mm(Tensor A, Tensor B) -> Tensor")
 lib.define("cutlass_scaled_fp8_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
 lib.define("scaled_fp8_mm(Tensor A, Tensor B, Tensor row_scale, Tensor col_scale) -> Tensor")
-lib.define("mxfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B) -> Tensor")
-lib.define("nvfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B, Tensor global_scale) -> Tensor")
+lib.define("mxfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B, Tensor? bias) -> Tensor")
+lib.define("nvfp4_mm(Tensor A, Tensor B, Tensor scale_A, Tensor scale_B, Tensor output_scale, Tensor? bias) -> Tensor")
 
 
 def int4_mm(A: Tensor, B: Tensor) -> Tensor:
@@ -77,30 +77,44 @@ def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor) -> Tensor:
     return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=row_scale.dtype)
 
 
-def mxfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
+def mxfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor, bias: Tensor | None = None) -> Tensor:
     assert A.ndim == 2 and A.dtype is torch.float4_e2m1fn_x2 and A.is_contiguous()
     assert B.ndim == 2 and B.dtype is torch.float4_e2m1fn_x2 and B.T.is_contiguous()
     assert A.shape[1] == B.shape[0]
     assert scale_A.dtype == torch.float8_e8m0fnu
     assert scale_B.dtype == torch.float8_e8m0fnu
-    return lib_ops.mxfp4_mm(A, B, scale_A, scale_B)
+    return lib_ops.mxfp4_mm(A, B, scale_A, scale_B, bias)
 
 
 @torch.library.impl(lib, "cutlass_scaled_fp8_mm", "Meta")
 @torch.library.impl(lib, "mxfp4_mm", "Meta")
-def _(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor) -> Tensor:
+def _(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor, bias: Tensor | None = None) -> Tensor:
     return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=torch.bfloat16)
 
 
-def nvfp4_mm(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor, global_scale: Tensor) -> Tensor:
+def nvfp4_mm(
+    A: Tensor,
+    B: Tensor,
+    scale_A: Tensor,
+    scale_B: Tensor,
+    output_scale: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
     assert A.ndim == 2 and A.dtype is torch.float4_e2m1fn_x2 and A.is_contiguous()
     assert B.ndim == 2 and B.dtype is torch.float4_e2m1fn_x2 and B.T.is_contiguous()
     assert A.shape[1] == B.shape[0]
     assert scale_A.dtype == torch.float8_e4m3fn
     assert scale_B.dtype == torch.float8_e4m3fn
-    return lib_ops.nvfp4_mm(A, B, scale_A, scale_B, global_scale)
+    return lib_ops.nvfp4_mm(A, B, scale_A, scale_B, output_scale, bias)
 
 
 @torch.library.impl(lib, "nvfp4_mm", "Meta")
-def _(A: Tensor, B: Tensor, scale_A: Tensor, scale_B: Tensor, global_scale: Tensor) -> Tensor:
+def _(
+    A: Tensor,
+    B: Tensor,
+    scale_A: Tensor,
+    scale_B: Tensor,
+    output_scale: Tensor,
+    bias: Tensor | None = None,
+) -> Tensor:
     return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=torch.bfloat16)
