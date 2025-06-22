@@ -117,8 +117,9 @@ def quantize_mxfp8(x: Tensor, dtype: torch.dtype):
     scales = block_scales_bits.to(torch.int8).view(torch.float8_e8m0fnu)
 
     # TODO: division by bit manipulation?
-    x_f32_blocks = x_f32_blocks / (block_scales_bits.unsqueeze(-1) << 23).view(torch.float32)
-    xq_f8 = x_f32_blocks.to(dtype).view(x.shape)
+    x_f32_blocks = x_f32_blocks / (block_scales_bits.unsqueeze(-1) << 23).view(torch.float32).clip(1e-12)
+    dtype_amax = DTYPE_AMAX_LUT[dtype]
+    xq_f8 = x_f32_blocks.clip(-dtype_amax, dtype_amax).to(dtype).view(x.shape)
 
     return xq_f8, scales
 
@@ -133,7 +134,7 @@ def quantize_mxfp4(x: Tensor):
     scales = block_scales_bits.to(torch.int8).view(torch.float8_e8m0fnu)
 
     # TODO: division by bit manipulation?
-    x_f32_blocks = x_f32_blocks / (block_scales_bits.unsqueeze(-1) << 23).view(torch.float32)
+    x_f32_blocks = x_f32_blocks / (block_scales_bits.unsqueeze(-1) << 23).view(torch.float32).clip(1e-12)
     xq_f4x2_blocks = fp32_to_fp4e2m1x2(x_f32_blocks)
     xq_f4x2 = xq_f4x2_blocks.view(x.shape[0], -1).view(dtype)
 
@@ -178,7 +179,6 @@ def dequantize_mxfp4(xq: Tensor, scales: Tensor):
 # https://docs.nvidia.com/cuda/cublas/index.html#d-block-quantization
 def quantize_nvfp4(x: Tensor, tensor_amax: Tensor | None = None):
     x_f32_blocks = x.float().unflatten(-1, (-1, 16))  # [M, N/16, 16]
-    blocks_absmax = x_f32_blocks.abs().amax(dim=-1)  # [M, N/16]
 
     data_dtype = torch.float4_e2m1fn_x2
     scale_dtype = torch.float8_e4m3fn
@@ -187,11 +187,12 @@ def quantize_nvfp4(x: Tensor, tensor_amax: Tensor | None = None):
     # or calculated on-the-fly
     if tensor_amax is None:
         tensor_amax = x_f32_blocks.amax()
+    scale_in_D = DTYPE_AMAX_LUT[data_dtype] * DTYPE_AMAX_LUT[scale_dtype] / tensor_amax.clip(1e-12)
 
-    scale_in_D = DTYPE_AMAX_LUT[data_dtype] * DTYPE_AMAX_LUT[scale_dtype] / tensor_amax
-    scales = (blocks_absmax * (DTYPE_AMAX_LUT[scale_dtype] / tensor_amax)).to(scale_dtype)
+    blocks_absmax = x_f32_blocks.abs().amax(dim=-1)  # [M, N/16]
+    scales = (blocks_absmax * (DTYPE_AMAX_LUT[scale_dtype] / tensor_amax.clip(1e-12))).to(scale_dtype)
 
-    x_f32_blocks = x_f32_blocks * (scale_in_D / scales.float().unsqueeze(-1))
+    x_f32_blocks = x_f32_blocks * (scale_in_D / scales.float().unsqueeze(-1).clip(1e-12))
     xq_f4x2_blocks = fp32_to_fp4e2m1x2(x_f32_blocks)
     xq_f4x2 = xq_f4x2_blocks.view(x.shape[0], -1).view(data_dtype)
 
