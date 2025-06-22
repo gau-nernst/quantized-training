@@ -7,6 +7,11 @@ NAME = "gn_kernels"
 
 
 def get_extension(arch: str):
+    if arch.endswith("a"):
+        gencode = f"arch=compute_{arch},code=sm_{arch}"  # compile to SASS
+    else:
+        gencode = f"arch=compute_{arch},code=compute_{arch}"  # compile to PTX
+
     return CUDAExtension(
         name=f"{NAME}.cutlass_sm{arch}",
         sources=list(CURRENT_DIR.glob(f"csrc/cutlass_sm{arch}_*.cu")),
@@ -15,8 +20,7 @@ def get_extension(arch: str):
             nvcc=[
                 f"-I{CURRENT_DIR / 'cutlass/include'}",
                 f"-I{CURRENT_DIR / 'cutlass/tools/util/include'}",
-                # compute_xx is PTX, sm_xx is SASS
-                f"-gencode=arch=compute_{arch},code=compute_{arch}",
+                f"-gencode={gencode}",
                 # "-DCUTLASS_DEBUG_TRACE_LEVEL=1",
             ]
         ),
