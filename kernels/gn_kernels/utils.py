@@ -49,34 +49,6 @@ def absmax_to_mx_scales_ocp(absmax: Tensor, dtype: torch.dtype):
     return ((absmax.view(torch.int32) & 0x7F80_0000).view(torch.float32) / dtype_pow2_amax).view(torch.int32) >> 23
 
 
-@triton.jit
-def fp32x8_to_fp4e2m1x8_triton(x: tl.tensor):
-    tl.static_assert(x.dtype == tl.int64)  # view fp32x2 as int64
-    return tl.inline_asm_elementwise(
-        asm="""
-        {
-        .reg .b32 lo, hi;
-        .reg .b8 byte0, byte1, byte2, byte3;
-
-        mov.b64 {lo, hi}, $1;
-        cvt.rn.satfinite.e2m1x2.f32 byte0, hi, lo;
-        mov.b64 {lo, hi}, $2;
-        cvt.rn.satfinite.e2m1x2.f32 byte1, hi, lo;
-        mov.b64 {lo, hi}, $3;
-        cvt.rn.satfinite.e2m1x2.f32 byte2, hi, lo;
-        mov.b64 {lo, hi}, $4;
-        cvt.rn.satfinite.e2m1x2.f32 byte3, hi, lo;
-        mov.b32 $0, {byte0, byte1, byte2, byte3};
-        }
-        """,
-        constraints="=r,l,l,l,l",
-        args=(x,),
-        dtype=tl.int8,
-        is_pure=True,
-        pack=4,
-    )
-
-
 def fp32_to_fp4e2m1x2(x: Tensor):
     assert x.dtype == torch.float32
 
@@ -184,11 +156,74 @@ def quantize_nvfp4(x: Tensor, tensor_scale: Tensor | None = None):
     if tensor_scale is None:
         tensor_scale = x_blocks_f32.abs().amax() / (q_dtype_amax * s_dtype_amax)
 
-    blocks_absmax = x_blocks_f32.abs().amax(dim=-1)  # [M, N/16]
-    scales_f32 = blocks_absmax / (q_dtype_amax * tensor_scale).clip(1e-12)
+    blocks_amax = x_blocks_f32.abs().amax(dim=-1)  # [M, N/16]
+    scales_f32 = blocks_amax / (q_dtype_amax * tensor_scale).clip(1e-12)
     scales = scales_f32.clip(-s_dtype_amax, s_dtype_amax).to(s_dtype)
 
     x_blocks_f32 = x_blocks_f32 / (tensor_scale * scales.float()).unsqueeze(-1).clip(1e-12)
     xq = fp32_to_fp4e2m1x2(x_blocks_f32).view(x.shape[0], -1)
 
     return xq, scales, tensor_scale
+
+
+@triton.jit
+def quantize_nvfp4_triton_kernel(x_ptr, tensor_scale_ptr, q_ptr, s_ptr, stride_xm, stride_xn, N):
+    pid_m = tl.program_id(1)
+    pid_n = tl.program_id(0)
+
+    offs_m = pid_m * 128 + tl.arange(0, 128)[:, None]
+    offs_n = pid_n * 64 + tl.arange(0, 64)[None, :]
+
+    x = tl.load(x_ptr + offs_m * stride_xm + offs_n * stride_xn)  # [128, 64]
+    x_blocks = x.to(tl.float32).reshape(128, 4, 16)  # [128, 4, 16]
+
+    tensor_scale = tl.load(tensor_scale_ptr)
+
+    block_amax = tl.max(x_blocks.abs(), axis=2)  # [128, 4]
+    scales_f32 = block_amax / tl.maximum(6.0 * tensor_scale, 1e-12)
+    scales_f32 = tl.minimum(tl.maximum(scales_f32, -448.0), 448.0)
+    scales = scales_f32.to(tl.float8e4nv)
+
+    # NVIDIA layout
+    packed_scales = scales.reshape(4, 32, 4).permute(1, 0, 2).reshape(32, 16)
+    offs_m = pid_m * 32 + tl.arange(0, 32)[:, None]
+    offs_n = pid_n * 16 + tl.arange(0, 16)[None, :]
+    tl.store(s_ptr + offs_m * (N // 4) + offs_n, packed_scales)
+
+    x_blocks = x_blocks / tl.maximum(scales.to(tl.float32)[:, :, None] * tensor_scale, 1e-12)
+    x_fp4x2 = tl.inline_asm_elementwise(
+        asm="""
+        {
+        .reg .b8 byte0, byte1, byte2, byte3;
+        cvt.rn.satfinite.e2m1x2.f32 byte0, $5, $1;
+        cvt.rn.satfinite.e2m1x2.f32 byte1, $6, $2;
+        cvt.rn.satfinite.e2m1x2.f32 byte2, $7, $3;
+        cvt.rn.satfinite.e2m1x2.f32 byte3, $8, $4;
+        mov.b32 $0, {byte0, byte1, byte2, byte3};
+        }
+        """,
+        constraints=(
+            "=r,"  # output, $0
+            "r,r,r,r,"  # lo nibble, $1-$4
+            "r,r,r,r"  # hi nibble, $5-$8
+        ),
+        args=x_blocks.reshape(128, 32, 2).split(),
+        dtype=tl.int8,
+        is_pure=True,
+        pack=4,
+    )  # (128, 32)
+    offs_m = pid_m * 128 + tl.arange(0, 128)[:, None]
+    offs_n = pid_n * 32 + tl.arange(0, 32)[None, :]
+    tl.store(q_ptr + offs_m * (N // 2) + offs_n, x_fp4x2)
+
+
+def quantize_nvfp4_triton(x: Tensor, tensor_scale: Tensor):
+    M, N = x.shape
+    assert M % 128 == 0 and N % 64 == 0
+    xq = x.new_empty(M, N // 2, dtype=torch.int8)
+    scales = x.new_empty(M, N // 16, dtype=torch.float8_e4m3fn)
+
+    grid = (N // 64, M // 128)
+    quantize_nvfp4_triton_kernel[grid](x, tensor_scale, xq, scales, x.stride(0), x.stride(1), N)
+
+    return xq.view(torch.float4_e2m1fn_x2), scales
