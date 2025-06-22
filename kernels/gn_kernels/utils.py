@@ -20,6 +20,7 @@ DTYPE_POW2_AMAX_LUT = {
 # https://github.com/NVIDIA/cutlass/blob/v3.9.2/media/docs/cpp/blackwell_functionality.md#scale-factor-layouts
 def pack_block_scales(scales: Tensor):
     M, N = scales.shape
+    assert M % 128 == 0 and N % 4 == 0  # don't support padding for now
     out = scales.reshape(M // 128, 128, N // 4, 4).transpose(1, 2)  # [num_M_tiles, num_N_tiles, 128, 4]
     out = out.reshape(-1, 4, 32, 4).transpose(1, 2).reshape(-1, 32, 16)
     return out.flatten()
@@ -176,8 +177,8 @@ def dequantize_mxfp4(xq: Tensor, scales: Tensor):
 
 # https://docs.nvidia.com/cuda/cublas/index.html#d-block-quantization
 def quantize_nvfp4(x: Tensor, scale_in_D: Tensor | None = None):
-    x_f32_blocks = x.float().unflatten(-1, (-1, 32))  # [M, N/32, 32]
-    blocks_absmax = x_f32_blocks.abs().amax(dim=-1)  # [M, N/32]
+    x_f32_blocks = x.float().unflatten(-1, (-1, 16))  # [M, N/16, 16]
+    blocks_absmax = x_f32_blocks.abs().amax(dim=-1)  # [M, N/16]
 
     data_dtype = torch.float4_e2m1fn_x2
     scale_dtype = torch.float8_e4m3fn
