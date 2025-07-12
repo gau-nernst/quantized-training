@@ -1,4 +1,5 @@
 import argparse
+import time
 
 import pandas as pd
 import torch
@@ -100,6 +101,8 @@ if __name__ == "__main__":
             if ref is not None:
                 torch.testing.assert_close(f(*args, **kwargs), ref, atol=atol, rtol=rtol)
             f(*args, **kwargs)
+
+            time.sleep(1)  # stabilize thermal
             latency_ms = do_bench(lambda: f(*args, **kwargs), return_mode="median")
             return (2 * M * N * K) / (latency_ms * 1e-3) * 1e-12
 
